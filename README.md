@@ -8,57 +8,51 @@ FidelityFX for VapourSynth
 ### EASU - 放大
 
 ```python
-clip = core.fidelityfx.EASU(clip, width=?, height=?)
+fidelityfx.EASU(clip, width=?, height=?)
 ```
 
-**参数说明：**
-- `width`: 输出宽度（必须 >= 输入宽度）
-- `height`: 输出高度（必须 >= 输入高度）
+- `width`: 输出宽度（必须不低于输入宽度）
+- `height`: 输出高度（必须不低于输入高度）
 
 ### RCAS - 锐化
 
 ```python
-clip = core.fidelityfx.RCAS(clip, sharpness=0.2)
+fidelityfx.RCAS(clip, sharpness=0.2)
 ```
 
-**参数说明：**
-- `sharpness`: 锐化强度，范围 [0.0, 2.0]（默认 0.2）
-  - 0.0 = 最大锐化
-  - 2.0 = 最小锐化
+- `sharpness`: 锐化强度，范围 `[0.0, 2.0]`（默认 `0.2` ）
+  - `0.0` 最大锐化 ； `2.0` 最小锐化
 
 ### ChromaticAberration - 色差
 
 ```python
-clip = core.fidelityfx.ChromaticAberration(clip, intensity=1.0)
+fidelityfx.ChromaticAberration(clip, intensity=1.0)
 ```
 
-**参数说明：**
-- `intensity`: 色差强度，范围 [0.0, 20.0]（默认 1.0）
-  - 0.0 = 无色差（快速路径，直接拷贝）
+- `intensity`: 色差强度，范围 `[0.0, 20.0]`（默认 `1.0` ）
+  - `0.0` 无色差
 
 ### Vignette - 暗角
 
 ```python
-clip = core.fidelityfx.Vignette(clip, intensity=1.0)
+fidelityfx.Vignette(clip, intensity=1.0)
 ```
 
-**参数说明：**
-- `intensity`: 暗角强度，范围 [0.0, 2.0]（默认 1.0）
-  - 0.0 = 无暗角（快速路径，直接拷贝）
+- `intensity`: 暗角强度，范围 `[0.0, 2.0]` （默认 `1.0` ）
+  - `0.0` 无暗角
 
 ### Grain - 胶片颗粒
 
 ```python
-clip = core.fidelityfx.Grain(clip, scale=1.0, amount=0.05, seed=-1)
+fidelityfx.Grain(clip, scale=1.0, amount=0.05, seed=-1)
 ```
 
-**参数说明：**
-- `scale`: 颗粒尺度，范围 [0.01, 20.0]（默认 1.0）
-- `amount`: 颗粒强度，范围 [0.0, 20.0]（默认 0.05）
-  - 0.0 = 无颗粒（快速路径，直接拷贝）
-- `seed`: 随机种子，整数类型（默认 -1）
-  - -1 = 使用帧序号作为种子（每帧颗粒不同，模拟真实胶片）
-  - >= 0 = 使用固定种子（所有帧颗粒相同）
+- `scale`: 颗粒尺度，范围 `[0.01, 20.0]` （默认 `1.0` ）
+- `amount`: 颗粒强度，范围 `[0.0, 20.0]` （默认 `0.05` ）
+  - `0.0` 无颗粒
+- `seed`: 随机种子，整数类型（默认 `-1` ）
+  - `-1` 使用帧序号作为种子（每帧颗粒不同，模拟真实胶片）
+  - 大于或等于0使用固定种子（所有帧颗粒相同）
 
 ### 处理流程示例
 
@@ -76,7 +70,7 @@ clip = core.fidelityfx.RCAS(clip, sharpness=0.1)
 # 镜头特效
 clip = core.fidelityfx.ChromaticAberration(clip, intensity=1.5)
 clip = core.fidelityfx.Vignette(clip, intensity=0.8)
-clip = core.fidelityfx.Grain(clip, amount=0.1)
+clip = core.fidelityfx.Grain(clip, amount=1.0)
 
 clip.set_output()
 ```
@@ -95,7 +89,7 @@ clip.set_output()
 | GRAYH | 16-bit 半精度 | ✅ | ✅ | ❌ | ✅ | ✅ |
 | GRAYS | 32-bit 浮点 | ✅ | ✅ | ❌ | ✅ | ✅ |
 
-不支持 YUV 格式输入。请先使用 `core.resize.Bicubic(clip, format=vs.RGBS, matrix_in_s="709")` 或类似的进行预转换。
+不支持 YUV 格式输入。请先使用 `core.resize.Bicubic(clip, format=vs.RGBH, matrix_in_s="709")` 或类似的进行预转换。
 
 ## 编译
 
