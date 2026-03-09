@@ -1,6 +1,6 @@
 #include "../include/vs_fidelityfx.h"
 #include "../include/pixel_access.h"
-#include "../fidelityfx/ffx_fsr1.h"
+#include "../include/ffx_fsr1.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -93,11 +93,14 @@ static const VSFrame *VS_CC rcas_get_frame(int n, int activationReason, void *in
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
+        PixelStoreContext sctx;
+        init_store_context(&sctx, dst, vsapi);
+
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 PixelVec result;
                 fsr_rcas_f(&result, x, y, &ctx, d->constants);
-                store_pixel_vec(dst, vsapi, x, y, result);
+                store_pixel_vec(&sctx, x, y, result);
             }
         }
 

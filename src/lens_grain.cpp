@@ -72,6 +72,9 @@ static const VSFrame *VS_CC grain_get_frame(int n, int activationReason, void *i
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
+        PixelStoreContext sctx;
+        init_store_context(&sctx, dst, vsapi);
+
         // Seed: use frame number by default, or user-specified fixed seed
         uint32_t grainSeed = (d->seed >= 0) ? (uint32_t)d->seed : (uint32_t)n;
         float grainScale = d->scale;
@@ -106,7 +109,7 @@ static const VSFrame *VS_CC grain_get_frame(int n, int activationReason, void *i
                     float limit = fminf(rgb[c], 1.0f - rgb[c]);
                     rgb[c] += grain * limit * grainAmount;
                 }
-                store_pixel_rgb(dst, vsapi, x, y, rgb);
+                store_pixel_rgb(&sctx, x, y, rgb);
             }
         }
 

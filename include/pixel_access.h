@@ -65,19 +65,44 @@ static inline uint16_t float_to_half(float val) {
     return h;
 }
 
+// Pixel format tag — determined once at context init, avoids per-pixel format inspection
+typedef enum {
+    PF_U8,    // 8-bit unsigned integer
+    PF_U16,   // 10-16 bit unsigned integer (stored as uint16_t)
+    PF_F32,   // 32-bit float
+    PF_F16    // 16-bit half float (stored as uint16_t)
+} PixelFormatTag;
+
 // Pixel loading context for callbacks
 typedef struct {
     const VSFrame *frame;
     const VSVideoFormat *format;
     const uint8_t *plane_ptrs[3];  // R, G, B plane pointers (GRAY: all point to plane 0)
-    ptrdiff_t strides[3];          // Plane strides
+    ptrdiff_t strides[3];          // Byte strides
+    ptrdiff_t elem_strides[3];     // Element strides (stride / sizeof(element))
     int width;
     int height;
     int numPlanes;                 // 1 for GRAY, 3 for RGB
+    PixelFormatTag tag;            // Format tag for fast dispatch
+    float norm_scale;              // 1.0/maxVal for int, 1.0 for float
 } PixelLoadContext;
+
+// Pixel store context — caches write pointers and format info
+typedef struct {
+    uint8_t *plane_ptrs[3];        // Write plane pointers
+    ptrdiff_t strides[3];          // Byte strides
+    ptrdiff_t elem_strides[3];     // Element strides
+    int writePlanes;               // 1 for GRAY, 3 for RGB
+    PixelFormatTag tag;
+    float denorm_scale;            // maxVal for int, 1.0 for float
+} PixelStoreContext;
 
 // Initialize pixel loading context
 void init_pixel_context(PixelLoadContext *ctx, const VSFrame *frame,
+                       const VSAPI *vsapi);
+
+// Initialize pixel store context
+void init_store_context(PixelStoreContext *ctx, VSFrame *frame,
                        const VSAPI *vsapi);
 
 // Clamp coordinate to valid range
@@ -91,8 +116,7 @@ static inline int clamp_coord(int coord, int max) {
 void load_pixel_rgb(float rgb[3], const PixelLoadContext *ctx, int x, int y);
 
 // Store float RGB [0.0, 1.0] to pixel
-void store_pixel_rgb(VSFrame *frame, const VSAPI *vsapi,
-                    int x, int y, const float rgb[3]);
+void store_pixel_rgb(const PixelStoreContext *ctx, int x, int y, const float rgb[3]);
 
 // Load 2x2 block of pixels for a single channel (gather4)
 void gather4_channel(float result[4], const PixelLoadContext *ctx,
@@ -198,8 +222,7 @@ static inline PixelVec pv_max3(PixelVec a, PixelVec b, PixelVec c) {
 PixelVec load_pixel_vec(const PixelLoadContext *ctx, int x, int y);
 
 // Store PixelVec {R, G, B, 0} to pixel
-void store_pixel_vec(VSFrame *frame, const VSAPI *vsapi,
-                    int x, int y, PixelVec rgb);
+void store_pixel_vec(const PixelStoreContext *ctx, int x, int y, PixelVec rgb);
 
 // Bilinear-interpolated single-channel sample at float pixel coordinates
 // channel: 0=R, 1=G, 2=B (for GRAY, all map to plane 0)

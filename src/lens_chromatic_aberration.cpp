@@ -51,6 +51,9 @@ static const VSFrame *VS_CC ca_get_frame(int n, int activationReason, void *inst
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
+        PixelStoreContext sctx;
+        init_store_context(&sctx, dst, vsapi);
+
         float redMag, greenMag;
         lens_get_rg_mag(d->intensity, &redMag, &greenMag);
 
@@ -73,7 +76,7 @@ static const VSFrame *VS_CC ca_get_frame(int n, int activationReason, void *inst
                 float blue  = read_channel(&ctx, 2, x, y);
 
                 float rgb[3] = { red, green, blue };
-                store_pixel_rgb(dst, vsapi, x, y, rgb);
+                store_pixel_rgb(&sctx, x, y, rgb);
             }
         }
 

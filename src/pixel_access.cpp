@@ -2,6 +2,15 @@
 #include <string.h>
 #include <math.h>
 
+// Helper: determine format tag from VSVideoFormat
+static PixelFormatTag format_to_tag(const VSVideoFormat *fmt) {
+    if (fmt->sampleType == stInteger) {
+        return (fmt->bitsPerSample == 8) ? PF_U8 : PF_U16;
+    } else {
+        return (fmt->bitsPerSample == 32) ? PF_F32 : PF_F16;
+    }
+}
+
 void init_pixel_context(PixelLoadContext *ctx, const VSFrame *frame,
                        const VSAPI *vsapi) {
     ctx->frame = frame;
@@ -9,159 +18,181 @@ void init_pixel_context(PixelLoadContext *ctx, const VSFrame *frame,
     ctx->width = vsapi->getFrameWidth(frame, 0);
     ctx->height = vsapi->getFrameHeight(frame, 0);
     ctx->numPlanes = ctx->format->numPlanes;
+    ctx->tag = format_to_tag(ctx->format);
+
+    // Precompute normalization scale
+    if (ctx->tag == PF_U8) {
+        ctx->norm_scale = 1.0f / 255.0f;
+    } else if (ctx->tag == PF_U16) {
+        ctx->norm_scale = 1.0f / (float)((1 << ctx->format->bitsPerSample) - 1);
+    } else {
+        ctx->norm_scale = 1.0f;
+    }
 
     ctx->plane_ptrs[0] = vsapi->getReadPtr(frame, 0);
     ctx->strides[0] = vsapi->getStride(frame, 0);
 
     if (ctx->numPlanes >= 3) {
-        // RGB: 0=R, 1=G, 2=B
         ctx->plane_ptrs[1] = vsapi->getReadPtr(frame, 1);
         ctx->strides[1] = vsapi->getStride(frame, 1);
         ctx->plane_ptrs[2] = vsapi->getReadPtr(frame, 2);
         ctx->strides[2] = vsapi->getStride(frame, 2);
     } else {
-        // GRAY: all channels point to the single plane
         ctx->plane_ptrs[1] = ctx->plane_ptrs[0];
         ctx->strides[1] = ctx->strides[0];
         ctx->plane_ptrs[2] = ctx->plane_ptrs[0];
         ctx->strides[2] = ctx->strides[0];
     }
-}
 
-void load_pixel_rgb(float rgb[3], const PixelLoadContext *ctx, int x, int y) {
-    // Clamp coordinates
-    x = clamp_coord(x, ctx->width);
-    y = clamp_coord(y, ctx->height);
-
-    // Load based on format
-    if (ctx->format->sampleType == stInteger) {
-        int bits = ctx->format->bitsPerSample;
-        if (bits == 8) {
-            for (int c = 0; c < 3; c++) {
-                const uint8_t *plane = ctx->plane_ptrs[c];
-                rgb[c] = plane[y * ctx->strides[c] + x] / 255.0f;
-            }
-        } else {
-            // 10/12/14/16-bit integer stored as uint16_t
-            float scale = 1.0f / (float)((1 << bits) - 1);
-            for (int c = 0; c < 3; c++) {
-                const uint16_t *plane = (const uint16_t *)ctx->plane_ptrs[c];
-                ptrdiff_t stride16 = ctx->strides[c] / sizeof(uint16_t);
-                rgb[c] = plane[y * stride16 + x] * scale;
-            }
-        }
-    } else if (ctx->format->sampleType == stFloat) {
-        if (ctx->format->bitsPerSample == 32) {
-            for (int c = 0; c < 3; c++) {
-                const float *plane = (const float *)ctx->plane_ptrs[c];
-                rgb[c] = plane[y * (ctx->strides[c] / sizeof(float)) + x];
-            }
-        } else {
-            // FP16 half
-            for (int c = 0; c < 3; c++) {
-                const uint16_t *plane = (const uint16_t *)ctx->plane_ptrs[c];
-                ptrdiff_t stride16 = ctx->strides[c] / sizeof(uint16_t);
-                rgb[c] = half_to_float(plane[y * stride16 + x]);
-            }
+    // Precompute element strides
+    for (int c = 0; c < 3; c++) {
+        switch (ctx->tag) {
+            case PF_U8:  ctx->elem_strides[c] = ctx->strides[c]; break;
+            case PF_U16: ctx->elem_strides[c] = ctx->strides[c] / (ptrdiff_t)sizeof(uint16_t); break;
+            case PF_F32: ctx->elem_strides[c] = ctx->strides[c] / (ptrdiff_t)sizeof(float); break;
+            case PF_F16: ctx->elem_strides[c] = ctx->strides[c] / (ptrdiff_t)sizeof(uint16_t); break;
         }
     }
 }
 
-void store_pixel_rgb(VSFrame *frame, const VSAPI *vsapi,
-                    int x, int y, const float rgb[3]) {
-    const VSVideoFormat *format = vsapi->getVideoFrameFormat(frame);
+void init_store_context(PixelStoreContext *ctx, VSFrame *frame,
+                       const VSAPI *vsapi) {
+    const VSVideoFormat *fmt = vsapi->getVideoFrameFormat(frame);
+    ctx->tag = format_to_tag(fmt);
+    ctx->writePlanes = fmt->numPlanes >= 3 ? 3 : 1;
 
-    int numPlanes = format->numPlanes;
+    if (ctx->tag == PF_U8) {
+        ctx->denorm_scale = 255.0f;
+    } else if (ctx->tag == PF_U16) {
+        ctx->denorm_scale = (float)((1 << fmt->bitsPerSample) - 1);
+    } else {
+        ctx->denorm_scale = 1.0f;
+    }
 
-    int writePlanes = numPlanes >= 3 ? 3 : 1;
-
-    if (format->sampleType == stInteger) {
-        int bits = format->bitsPerSample;
-        float maxVal = (float)((1 << bits) - 1);
-        for (int c = 0; c < writePlanes; c++) {
-            float clamped = fminf(fmaxf(rgb[c], 0.0f), 1.0f);
-            if (bits == 8) {
-                uint8_t *plane = vsapi->getWritePtr(frame, c);
-                ptrdiff_t stride = vsapi->getStride(frame, c);
-                plane[y * stride + x] = (uint8_t)(clamped * maxVal + 0.5f);
-            } else {
-                uint16_t *plane = (uint16_t *)vsapi->getWritePtr(frame, c);
-                ptrdiff_t stride = vsapi->getStride(frame, c) / sizeof(uint16_t);
-                plane[y * stride + x] = (uint16_t)(clamped * maxVal + 0.5f);
-            }
+    for (int c = 0; c < ctx->writePlanes; c++) {
+        ctx->plane_ptrs[c] = vsapi->getWritePtr(frame, c);
+        ctx->strides[c] = vsapi->getStride(frame, c);
+        switch (ctx->tag) {
+            case PF_U8:  ctx->elem_strides[c] = ctx->strides[c]; break;
+            case PF_U16: ctx->elem_strides[c] = ctx->strides[c] / (ptrdiff_t)sizeof(uint16_t); break;
+            case PF_F32: ctx->elem_strides[c] = ctx->strides[c] / (ptrdiff_t)sizeof(float); break;
+            case PF_F16: ctx->elem_strides[c] = ctx->strides[c] / (ptrdiff_t)sizeof(uint16_t); break;
         }
-    } else if (format->sampleType == stFloat) {
-        if (format->bitsPerSample == 32) {
-            for (int c = 0; c < writePlanes; c++) {
-                float *plane = (float *)vsapi->getWritePtr(frame, c);
-                ptrdiff_t stride = vsapi->getStride(frame, c) / sizeof(float);
-                plane[y * stride + x] = rgb[c];
-            }
-        } else {
-            // FP16 half
-            for (int c = 0; c < writePlanes; c++) {
-                uint16_t *plane = (uint16_t *)vsapi->getWritePtr(frame, c);
-                ptrdiff_t stride = vsapi->getStride(frame, c) / sizeof(uint16_t);
-                plane[y * stride + x] = float_to_half(rgb[c]);
-            }
+    }
+}
+
+void load_pixel_rgb(float rgb[3], const PixelLoadContext *ctx, int x, int y) {
+    x = clamp_coord(x, ctx->width);
+    y = clamp_coord(y, ctx->height);
+
+    switch (ctx->tag) {
+        case PF_U8: {
+            float s = ctx->norm_scale;
+            for (int c = 0; c < 3; c++)
+                rgb[c] = ctx->plane_ptrs[c][y * ctx->elem_strides[c] + x] * s;
+            break;
         }
+        case PF_U16: {
+            float s = ctx->norm_scale;
+            for (int c = 0; c < 3; c++) {
+                const uint16_t *p = (const uint16_t *)ctx->plane_ptrs[c];
+                rgb[c] = p[y * ctx->elem_strides[c] + x] * s;
+            }
+            break;
+        }
+        case PF_F32:
+            for (int c = 0; c < 3; c++) {
+                const float *p = (const float *)ctx->plane_ptrs[c];
+                rgb[c] = p[y * ctx->elem_strides[c] + x];
+            }
+            break;
+        case PF_F16:
+            for (int c = 0; c < 3; c++) {
+                const uint16_t *p = (const uint16_t *)ctx->plane_ptrs[c];
+                rgb[c] = half_to_float(p[y * ctx->elem_strides[c] + x]);
+            }
+            break;
+    }
+}
+
+void store_pixel_rgb(const PixelStoreContext *ctx, int x, int y, const float rgb[3]) {
+    switch (ctx->tag) {
+        case PF_U8: {
+            float s = ctx->denorm_scale;
+            for (int c = 0; c < ctx->writePlanes; c++) {
+                float clamped = fminf(fmaxf(rgb[c], 0.0f), 1.0f);
+                ctx->plane_ptrs[c][y * ctx->elem_strides[c] + x] = (uint8_t)(clamped * s + 0.5f);
+            }
+            break;
+        }
+        case PF_U16: {
+            float s = ctx->denorm_scale;
+            for (int c = 0; c < ctx->writePlanes; c++) {
+                float clamped = fminf(fmaxf(rgb[c], 0.0f), 1.0f);
+                ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->elem_strides[c] + x] = (uint16_t)(clamped * s + 0.5f);
+            }
+            break;
+        }
+        case PF_F32:
+            for (int c = 0; c < ctx->writePlanes; c++)
+                ((float *)ctx->plane_ptrs[c])[y * ctx->elem_strides[c] + x] = rgb[c];
+            break;
+        case PF_F16:
+            for (int c = 0; c < ctx->writePlanes; c++)
+                ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->elem_strides[c] + x] = float_to_half(rgb[c]);
+            break;
     }
 }
 
 void gather4_channel(float result[4], const PixelLoadContext *ctx,
                     float x, float y, int channel) {
-    // Convert from normalized [0,1] texture coordinates to pixel coordinates
     float pixel_x = x * ctx->width;
     float pixel_y = y * ctx->height;
 
-    // Get integer coordinates
     int ix = (int)floorf(pixel_x);
     int iy = (int)floorf(pixel_y);
 
-    // Load 2x2 block with clamping
     int x0 = clamp_coord(ix, ctx->width);
     int x1 = clamp_coord(ix + 1, ctx->width);
     int y0 = clamp_coord(iy, ctx->height);
     int y1 = clamp_coord(iy + 1, ctx->height);
 
     const uint8_t *plane = ctx->plane_ptrs[channel];
-    ptrdiff_t stride = ctx->strides[channel];
+    ptrdiff_t es = ctx->elem_strides[channel];
 
-    // GPU gather4 ordering: [r, g, b, a] = [bottom-left, bottom-right, top-right, top-left]
-    // For "ijfe" layout (e,f / i,j): [0]=i(bottom-left), [1]=j(bottom-right), [2]=f(top-right), [3]=e(top-left)
-    // In image coords (Y-down): bottom=y1, top=y0, left=x0, right=x1
-    if (ctx->format->sampleType == stInteger) {
-        int bits = ctx->format->bitsPerSample;
-        if (bits == 8) {
-            float scale = 1.0f / 255.0f;
-            result[0] = plane[y1 * stride + x0] * scale;
-            result[1] = plane[y1 * stride + x1] * scale;
-            result[2] = plane[y0 * stride + x1] * scale;
-            result[3] = plane[y0 * stride + x0] * scale;
-        } else {
-            const uint16_t *p16 = (const uint16_t *)plane;
-            ptrdiff_t s16 = stride / sizeof(uint16_t);
-            float scale = 1.0f / (float)((1 << bits) - 1);
-            result[0] = p16[y1 * s16 + x0] * scale;
-            result[1] = p16[y1 * s16 + x1] * scale;
-            result[2] = p16[y0 * s16 + x1] * scale;
-            result[3] = p16[y0 * s16 + x0] * scale;
+    switch (ctx->tag) {
+        case PF_U8: {
+            float s = ctx->norm_scale;
+            result[0] = plane[y1 * es + x0] * s;
+            result[1] = plane[y1 * es + x1] * s;
+            result[2] = plane[y0 * es + x1] * s;
+            result[3] = plane[y0 * es + x0] * s;
+            break;
         }
-    } else if (ctx->format->sampleType == stFloat) {
-        if (ctx->format->bitsPerSample == 32) {
-            const float *fp = (const float *)plane;
-            ptrdiff_t sf = stride / sizeof(float);
-            result[0] = fp[y1 * sf + x0];
-            result[1] = fp[y1 * sf + x1];
-            result[2] = fp[y0 * sf + x1];
-            result[3] = fp[y0 * sf + x0];
-        } else {
-            const uint16_t *hp = (const uint16_t *)plane;
-            ptrdiff_t sh = stride / sizeof(uint16_t);
-            result[0] = half_to_float(hp[y1 * sh + x0]);
-            result[1] = half_to_float(hp[y1 * sh + x1]);
-            result[2] = half_to_float(hp[y0 * sh + x1]);
-            result[3] = half_to_float(hp[y0 * sh + x0]);
+        case PF_U16: {
+            const uint16_t *p = (const uint16_t *)plane;
+            float s = ctx->norm_scale;
+            result[0] = p[y1 * es + x0] * s;
+            result[1] = p[y1 * es + x1] * s;
+            result[2] = p[y0 * es + x1] * s;
+            result[3] = p[y0 * es + x0] * s;
+            break;
+        }
+        case PF_F32: {
+            const float *p = (const float *)plane;
+            result[0] = p[y1 * es + x0];
+            result[1] = p[y1 * es + x1];
+            result[2] = p[y0 * es + x1];
+            result[3] = p[y0 * es + x0];
+            break;
+        }
+        case PF_F16: {
+            const uint16_t *p = (const uint16_t *)plane;
+            result[0] = half_to_float(p[y1 * es + x0]);
+            result[1] = half_to_float(p[y1 * es + x1]);
+            result[2] = half_to_float(p[y0 * es + x1]);
+            result[3] = half_to_float(p[y0 * es + x0]);
+            break;
         }
     }
 }
@@ -171,67 +202,66 @@ PixelVec load_pixel_vec(const PixelLoadContext *ctx, int x, int y) {
     y = clamp_coord(y, ctx->height);
 
     float r, g, b;
-    if (ctx->format->sampleType == stInteger) {
-        int bits = ctx->format->bitsPerSample;
-        if (bits == 8) {
-            float scale = 1.0f / 255.0f;
-            r = ctx->plane_ptrs[0][y * ctx->strides[0] + x] * scale;
-            g = ctx->plane_ptrs[1][y * ctx->strides[1] + x] * scale;
-            b = ctx->plane_ptrs[2][y * ctx->strides[2] + x] * scale;
-        } else {
-            float scale = 1.0f / (float)((1 << bits) - 1);
-            r = ((const uint16_t *)ctx->plane_ptrs[0])[y * (ctx->strides[0] / 2) + x] * scale;
-            g = ((const uint16_t *)ctx->plane_ptrs[1])[y * (ctx->strides[1] / 2) + x] * scale;
-            b = ((const uint16_t *)ctx->plane_ptrs[2])[y * (ctx->strides[2] / 2) + x] * scale;
+    switch (ctx->tag) {
+        case PF_U8: {
+            float s = ctx->norm_scale;
+            r = ctx->plane_ptrs[0][y * ctx->elem_strides[0] + x] * s;
+            g = ctx->plane_ptrs[1][y * ctx->elem_strides[1] + x] * s;
+            b = ctx->plane_ptrs[2][y * ctx->elem_strides[2] + x] * s;
+            break;
         }
-    } else if (ctx->format->bitsPerSample == 32) {
-        r = ((const float *)ctx->plane_ptrs[0])[y * (ctx->strides[0] / 4) + x];
-        g = ((const float *)ctx->plane_ptrs[1])[y * (ctx->strides[1] / 4) + x];
-        b = ((const float *)ctx->plane_ptrs[2])[y * (ctx->strides[2] / 4) + x];
-    } else {
-        r = half_to_float(((const uint16_t *)ctx->plane_ptrs[0])[y * (ctx->strides[0] / 2) + x]);
-        g = half_to_float(((const uint16_t *)ctx->plane_ptrs[1])[y * (ctx->strides[1] / 2) + x]);
-        b = half_to_float(((const uint16_t *)ctx->plane_ptrs[2])[y * (ctx->strides[2] / 2) + x]);
+        case PF_U16: {
+            float s = ctx->norm_scale;
+            r = ((const uint16_t *)ctx->plane_ptrs[0])[y * ctx->elem_strides[0] + x] * s;
+            g = ((const uint16_t *)ctx->plane_ptrs[1])[y * ctx->elem_strides[1] + x] * s;
+            b = ((const uint16_t *)ctx->plane_ptrs[2])[y * ctx->elem_strides[2] + x] * s;
+            break;
+        }
+        case PF_F32:
+            r = ((const float *)ctx->plane_ptrs[0])[y * ctx->elem_strides[0] + x];
+            g = ((const float *)ctx->plane_ptrs[1])[y * ctx->elem_strides[1] + x];
+            b = ((const float *)ctx->plane_ptrs[2])[y * ctx->elem_strides[2] + x];
+            break;
+        case PF_F16:
+            r = half_to_float(((const uint16_t *)ctx->plane_ptrs[0])[y * ctx->elem_strides[0] + x]);
+            g = half_to_float(((const uint16_t *)ctx->plane_ptrs[1])[y * ctx->elem_strides[1] + x]);
+            b = half_to_float(((const uint16_t *)ctx->plane_ptrs[2])[y * ctx->elem_strides[2] + x]);
+            break;
     }
     return pv_set(r, g, b);
 }
 
-void store_pixel_vec(VSFrame *frame, const VSAPI *vsapi,
-                    int x, int y, PixelVec rgb) {
-    const VSVideoFormat *format = vsapi->getVideoFrameFormat(frame);
-    int writePlanes = format->numPlanes >= 3 ? 3 : 1;
-
+void store_pixel_vec(const PixelStoreContext *ctx, int x, int y, PixelVec rgb) {
     float tmp[3];
     tmp[0] = pv_extract(rgb, 0);
     tmp[1] = pv_extract(rgb, 1);
     tmp[2] = pv_extract(rgb, 2);
 
-    if (format->sampleType == stInteger) {
-        int bits = format->bitsPerSample;
-        float maxVal = (float)((1 << bits) - 1);
-        for (int c = 0; c < writePlanes; c++) {
-            float clamped = fminf(fmaxf(tmp[c], 0.0f), 1.0f);
-            if (bits == 8) {
-                uint8_t *plane = vsapi->getWritePtr(frame, c);
-                plane[y * vsapi->getStride(frame, c) + x] = (uint8_t)(clamped * maxVal + 0.5f);
-            } else {
-                uint16_t *plane = (uint16_t *)vsapi->getWritePtr(frame, c);
-                ptrdiff_t stride = vsapi->getStride(frame, c) / sizeof(uint16_t);
-                plane[y * stride + x] = (uint16_t)(clamped * maxVal + 0.5f);
+    switch (ctx->tag) {
+        case PF_U8: {
+            float s = ctx->denorm_scale;
+            for (int c = 0; c < ctx->writePlanes; c++) {
+                float clamped = fminf(fmaxf(tmp[c], 0.0f), 1.0f);
+                ctx->plane_ptrs[c][y * ctx->elem_strides[c] + x] = (uint8_t)(clamped * s + 0.5f);
             }
+            break;
         }
-    } else if (format->bitsPerSample == 32) {
-        for (int c = 0; c < writePlanes; c++) {
-            float *plane = (float *)vsapi->getWritePtr(frame, c);
-            ptrdiff_t stride = vsapi->getStride(frame, c) / sizeof(float);
-            plane[y * stride + x] = tmp[c];
+        case PF_U16: {
+            float s = ctx->denorm_scale;
+            for (int c = 0; c < ctx->writePlanes; c++) {
+                float clamped = fminf(fmaxf(tmp[c], 0.0f), 1.0f);
+                ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->elem_strides[c] + x] = (uint16_t)(clamped * s + 0.5f);
+            }
+            break;
         }
-    } else {
-        for (int c = 0; c < writePlanes; c++) {
-            uint16_t *plane = (uint16_t *)vsapi->getWritePtr(frame, c);
-            ptrdiff_t stride = vsapi->getStride(frame, c) / sizeof(uint16_t);
-            plane[y * stride + x] = float_to_half(tmp[c]);
-        }
+        case PF_F32:
+            for (int c = 0; c < ctx->writePlanes; c++)
+                ((float *)ctx->plane_ptrs[c])[y * ctx->elem_strides[c] + x] = tmp[c];
+            break;
+        case PF_F16:
+            for (int c = 0; c < ctx->writePlanes; c++)
+                ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->elem_strides[c] + x] = float_to_half(tmp[c]);
+            break;
     }
 }
 
@@ -240,27 +270,19 @@ float read_channel(const PixelLoadContext *ctx, int channel, int x, int y) {
     y = clamp_coord(y, ctx->height);
 
     const uint8_t *plane = ctx->plane_ptrs[channel];
-    ptrdiff_t stride = ctx->strides[channel];
+    ptrdiff_t es = ctx->elem_strides[channel];
 
-    if (ctx->format->sampleType == stInteger) {
-        int bits = ctx->format->bitsPerSample;
-        if (bits == 8) {
-            return plane[y * stride + x] / 255.0f;
-        } else {
-            float scale = 1.0f / (float)((1 << bits) - 1);
-            const uint16_t *p16 = (const uint16_t *)plane;
-            ptrdiff_t s16 = stride / sizeof(uint16_t);
-            return p16[y * s16 + x] * scale;
-        }
-    } else if (ctx->format->bitsPerSample == 32) {
-        const float *fp = (const float *)plane;
-        ptrdiff_t sf = stride / sizeof(float);
-        return fp[y * sf + x];
-    } else {
-        const uint16_t *hp = (const uint16_t *)plane;
-        ptrdiff_t sh = stride / sizeof(uint16_t);
-        return half_to_float(hp[y * sh + x]);
+    switch (ctx->tag) {
+        case PF_U8:
+            return plane[y * es + x] * ctx->norm_scale;
+        case PF_U16:
+            return ((const uint16_t *)plane)[y * es + x] * ctx->norm_scale;
+        case PF_F32:
+            return ((const float *)plane)[y * es + x];
+        case PF_F16:
+            return half_to_float(((const uint16_t *)plane)[y * es + x]);
     }
+    return 0.0f;
 }
 
 float sample_channel_bilinear(const PixelLoadContext *ctx, int channel, float px, float py) {

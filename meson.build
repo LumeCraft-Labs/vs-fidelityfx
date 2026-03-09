@@ -1,5 +1,5 @@
 project('vs-fidelityfx', 'cpp',
-  version: '1.0.0',
+  version: '1.0.1',
   default_options: ['cpp_std=c++11', 'warning_level=2', 'buildtype=release']
 )
 
@@ -8,7 +8,7 @@ cpp = meson.get_compiler('cpp')
 math_dep = cpp.find_library('m', required: false)
 
 # Include directories
-inc_dirs = include_directories('include', 'fidelityfx')
+inc_dirs = include_directories('include')
 
 # Source files
 sources = [

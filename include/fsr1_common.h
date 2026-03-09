@@ -8,8 +8,8 @@
 #define FFX_CPU
 
 // Include FidelityFX headers
-#include "../fidelityfx/ffx_common_types.h"
-#include "../fidelityfx/ffx_core_cpu.h"
+#include "ffx_common_types.h"
+#include "ffx_core_cpu.h"
 
 // Missing FidelityFX helper functions
 static inline FfxFloat32 ffxMax3(FfxFloat32 a, FfxFloat32 b, FfxFloat32 c) {

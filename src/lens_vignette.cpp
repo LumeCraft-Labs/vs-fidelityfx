@@ -39,6 +39,9 @@ static const VSFrame *VS_CC vignette_get_frame(int n, int activationReason, void
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
+        PixelStoreContext sctx;
+        init_store_context(&sctx, dst, vsapi);
+
         float centerX = (float)(width / 2);
         float centerY = (float)(height / 2);
         float piOver4 = (float)(M_PI * 0.25);
@@ -65,7 +68,7 @@ static const VSFrame *VS_CC vignette_get_frame(int n, int activationReason, void
                 rgb[0] *= mask;
                 rgb[1] *= mask;
                 rgb[2] *= mask;
-                store_pixel_rgb(dst, vsapi, x, y, rgb);
+                store_pixel_rgb(&sctx, x, y, rgb);
             }
         }
 
