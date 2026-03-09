@@ -4,6 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+static inline PixelVec load_fp(const float * const *p, int stride,
+                               int x, int y, int w, int h) {
+    x = clamp_coord(x, w);
+    y = clamp_coord(y, h);
+    int idx = y * stride + x;
+    return pv_set(p[0][idx], p[1][idx], p[2][idx]);
+}
+
 static void fsr_rcas_con(FfxUInt32x4 con, FfxFloat32 sharpness) {
     sharpness = exp2f(-sharpness);
     con[0] = ffxAsUInt32(sharpness);
@@ -13,14 +21,15 @@ static void fsr_rcas_con(FfxUInt32x4 con, FfxFloat32 sharpness) {
 }
 
 static void fsr_rcas_f(PixelVec *result,
-                       int x, int y, const PixelLoadContext *ctx,
+                       int x, int y,
+                       const float * const *fp, int fp_stride, int fp_w, int fp_h,
                        const FfxUInt32x4 con) {
-    // Load 5-tap cross pattern as PixelVec {R, G, B, 0}
-    PixelVec pb = load_pixel_vec(ctx, x, y - 1);
-    PixelVec pd = load_pixel_vec(ctx, x - 1, y);
-    PixelVec pe = load_pixel_vec(ctx, x, y);
-    PixelVec pf = load_pixel_vec(ctx, x + 1, y);
-    PixelVec ph = load_pixel_vec(ctx, x, y + 1);
+    // Load 5-tap cross pattern directly from float planes
+    PixelVec pb = load_fp(fp, fp_stride, x, y - 1, fp_w, fp_h);
+    PixelVec pd = load_fp(fp, fp_stride, x - 1, y, fp_w, fp_h);
+    PixelVec pe = load_fp(fp, fp_stride, x, y, fp_w, fp_h);
+    PixelVec pf = load_fp(fp, fp_stride, x + 1, y, fp_w, fp_h);
+    PixelVec ph = load_fp(fp, fp_stride, x, y + 1, fp_w, fp_h);
 
     // Luma times 2 (scalar)
     float bL = pv_luma(pb);
@@ -90,20 +99,28 @@ static const VSFrame *VS_CC rcas_get_frame(int n, int activationReason, void *in
 
         VSFrame *dst = vsapi->newVideoFrame(fi, width, height, src, core);
 
+        // Pre-convert entire input to float planes
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
+
+        float *fp[3];
+        int fp_stride;
+        float *fp_buf = convert_to_float_planes(fp, &fp_stride, &ctx);
 
         PixelStoreContext sctx;
         init_store_context(&sctx, dst, vsapi);
 
+        const float * const *fp_c = (const float * const *)fp;
+
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 PixelVec result;
-                fsr_rcas_f(&result, x, y, &ctx, d->constants);
+                fsr_rcas_f(&result, x, y, fp_c, fp_stride, width, height, d->constants);
                 store_pixel_vec(&sctx, x, y, result);
             }
         }
 
+        free(fp_buf);
         vsapi->freeFrame(src);
         return dst;
     }

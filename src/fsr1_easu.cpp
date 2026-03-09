@@ -4,6 +4,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+// ========== Float-plane pixel access (zero overhead inner-loop) ==========
+
+static inline PixelVec load_fp(const float * const *p, int stride,
+                               int x, int y, int w, int h) {
+    x = clamp_coord(x, w);
+    y = clamp_coord(y, h);
+    int idx = y * stride + x;
+    return pv_set(p[0][idx], p[1][idx], p[2][idx]);
+}
+
+static inline float luma_fp(const float * const *p, int stride,
+                            int x, int y, int w, int h) {
+    x = clamp_coord(x, w);
+    y = clamp_coord(y, h);
+    int idx = y * stride + x;
+    return p[0][idx] * 0.5f + p[1][idx] + p[2][idx] * 0.5f;
+}
+
+// ==========================================================================
+
 static inline void fsr_easu_tap(
     PixelVec *aC, float *aW,
     float pixelOffset_x, float pixelOffset_y,
@@ -73,9 +93,8 @@ static void fsr_easu_set_float(
 static void fsr_easu_float(
     PixelVec *pix,
     int out_x, int out_y,
-    const PixelLoadContext *ctx,
-    const FfxUInt32x4 con0, const FfxUInt32x4 con1,
-    const FfxUInt32x4 con2, const FfxUInt32x4 con3)
+    const float * const *fp, int fp_stride, int fp_w, int fp_h,
+    const FfxUInt32x4 con0)
 {
     // Get position of 'f'
     float pp_x = out_x * ffxAsFloat(con0[0]) + ffxAsFloat(con0[2]);
@@ -88,19 +107,19 @@ static void fsr_easu_float(
     int base_x = (int)fp_x;
     int base_y = (int)fp_y;
 
-    // Load 12 pixels as PixelVec {R, G, B, 0}
-    PixelVec pb = load_pixel_vec(ctx, base_x + 0, base_y - 1);
-    PixelVec pc = load_pixel_vec(ctx, base_x + 1, base_y - 1);
-    PixelVec pe = load_pixel_vec(ctx, base_x - 1, base_y + 0);
-    PixelVec pf = load_pixel_vec(ctx, base_x + 0, base_y + 0);
-    PixelVec pg = load_pixel_vec(ctx, base_x + 1, base_y + 0);
-    PixelVec ph = load_pixel_vec(ctx, base_x + 2, base_y + 0);
-    PixelVec pi = load_pixel_vec(ctx, base_x - 1, base_y + 1);
-    PixelVec pj = load_pixel_vec(ctx, base_x + 0, base_y + 1);
-    PixelVec pk = load_pixel_vec(ctx, base_x + 1, base_y + 1);
-    PixelVec pl = load_pixel_vec(ctx, base_x + 2, base_y + 1);
-    PixelVec pn = load_pixel_vec(ctx, base_x + 0, base_y + 2);
-    PixelVec po = load_pixel_vec(ctx, base_x + 1, base_y + 2);
+    // Load 12 pixels directly from pre-converted float planes
+    PixelVec pb = load_fp(fp, fp_stride, base_x + 0, base_y - 1, fp_w, fp_h);
+    PixelVec pc = load_fp(fp, fp_stride, base_x + 1, base_y - 1, fp_w, fp_h);
+    PixelVec pe = load_fp(fp, fp_stride, base_x - 1, base_y + 0, fp_w, fp_h);
+    PixelVec pf = load_fp(fp, fp_stride, base_x + 0, base_y + 0, fp_w, fp_h);
+    PixelVec pg = load_fp(fp, fp_stride, base_x + 1, base_y + 0, fp_w, fp_h);
+    PixelVec ph = load_fp(fp, fp_stride, base_x + 2, base_y + 0, fp_w, fp_h);
+    PixelVec pi = load_fp(fp, fp_stride, base_x - 1, base_y + 1, fp_w, fp_h);
+    PixelVec pj = load_fp(fp, fp_stride, base_x + 0, base_y + 1, fp_w, fp_h);
+    PixelVec pk = load_fp(fp, fp_stride, base_x + 1, base_y + 1, fp_w, fp_h);
+    PixelVec pl = load_fp(fp, fp_stride, base_x + 2, base_y + 1, fp_w, fp_h);
+    PixelVec pn = load_fp(fp, fp_stride, base_x + 0, base_y + 2, fp_w, fp_h);
+    PixelVec po = load_fp(fp, fp_stride, base_x + 1, base_y + 2, fp_w, fp_h);
 
     // Compute luma for each pixel
     float bL = pv_luma(pb), cL = pv_luma(pc);
@@ -178,6 +197,125 @@ static void fsr_easu_float(
     }
 }
 
+// ========== Fast-mode EASU (reduced quality, higher speed) ================
+
+static void fsr_easu_float_fast(
+    PixelVec *pix,
+    int out_x, int out_y,
+    const float * const *fp, int fp_stride, int fp_w, int fp_h,
+    const FfxUInt32x4 con0)
+{
+    float pp_x = out_x * ffxAsFloat(con0[0]) + ffxAsFloat(con0[2]);
+    float pp_y = out_y * ffxAsFloat(con0[1]) + ffxAsFloat(con0[3]);
+    float fp_x = floorf(pp_x);
+    float fp_y = floorf(pp_y);
+    pp_x -= fp_x;
+    pp_y -= fp_y;
+
+    int base_x = (int)fp_x;
+    int base_y = (int)fp_y;
+
+    // 5-tap cross pattern: A(top), B(left), C(center), D(right), E(bottom)
+    PixelVec pA = load_fp(fp, fp_stride, base_x, base_y - 1, fp_w, fp_h);
+    PixelVec pB = load_fp(fp, fp_stride, base_x - 1, base_y, fp_w, fp_h);
+    PixelVec pC = load_fp(fp, fp_stride, base_x, base_y, fp_w, fp_h);
+    PixelVec pD = load_fp(fp, fp_stride, base_x + 1, base_y, fp_w, fp_h);
+    PixelVec pE = load_fp(fp, fp_stride, base_x, base_y + 1, fp_w, fp_h);
+
+    float lA = pv_luma(pA), lB = pv_luma(pB), lC = pv_luma(pC);
+    float lD = pv_luma(pD), lE = pv_luma(pE);
+
+    // Direction from cross differences
+    float dc = lD - lC, cb = lC - lB;
+    float lenX = ffxMax(ffxAbs(dc), ffxAbs(cb));
+    lenX = lenX > 0.0f ? ffxReciprocal(lenX) : 0.0f;
+    float dirX = lD - lB;
+    lenX = ffxSaturateSafe(ffxAbs(dirX) * lenX);
+    lenX *= lenX;
+
+    float ec = lE - lC, ca = lC - lA;
+    float lenY = ffxMax(ffxAbs(ec), ffxAbs(ca));
+    lenY = lenY > 0.0f ? ffxReciprocal(lenY) : 0.0f;
+    float dirY = lE - lA;
+    lenY = ffxSaturateSafe(ffxAbs(dirY) * lenY);
+    float len = lenY * lenY + lenX;
+
+    float dir2 = dirX * dirX + dirY * dirY;
+
+    // Early exit: flat region → bilinear
+    if (dir2 < (1.0f / 64.0f)) {
+        // Load the remaining 3 pixels for bilinear (f,g,j,k pattern)
+        PixelVec pg = load_fp(fp, fp_stride, base_x + 1, base_y, fp_w, fp_h);
+        PixelVec pj = load_fp(fp, fp_stride, base_x, base_y + 1, fp_w, fp_h);
+        PixelVec pk = load_fp(fp, fp_stride, base_x + 1, base_y + 1, fp_w, fp_h);
+        PixelVec row0 = pv_add(pv_mul(pC, pv_set1(1.0f - pp_x)),
+                               pv_mul(pg, pv_set1(pp_x)));
+        PixelVec row1 = pv_add(pv_mul(pj, pv_set1(1.0f - pp_x)),
+                               pv_mul(pk, pv_set1(pp_x)));
+        *pix = pv_add(pv_mul(row0, pv_set1(1.0f - pp_y)),
+                      pv_mul(row1, pv_set1(pp_y)));
+        return;
+    }
+
+    float dirR = ffxRsqrt(dir2);
+    dirX *= dirR;
+    dirY *= dirR;
+    len *= 0.5f;
+    len *= len;
+
+    float stretch = (dirX * dirX + dirY * dirY)
+                    * ffxReciprocal(ffxMax(ffxAbs(dirX), ffxAbs(dirY)));
+    float len2_x = 1.0f + (stretch - 1.0f) * len;
+    float len2_y = 1.0f - 0.5f * len;
+
+    float lob = 0.5f + (1.0f / 4.0f - 0.04f - 0.5f) * len;
+    float clp = ffxReciprocal(lob);
+
+    // Now load remaining pixels for 12-tap
+    PixelVec pb = pA;  // (base_x, base_y-1) already loaded as pA
+    PixelVec pc = load_fp(fp, fp_stride, base_x + 1, base_y - 1, fp_w, fp_h);
+    PixelVec pe = pB;  // (base_x-1, base_y) already loaded as pB
+    PixelVec pf = pC;  // center
+    PixelVec pg = pD;  // (base_x+1, base_y) already loaded as pD
+    PixelVec ph = load_fp(fp, fp_stride, base_x + 2, base_y, fp_w, fp_h);
+    PixelVec pi = load_fp(fp, fp_stride, base_x - 1, base_y + 1, fp_w, fp_h);
+    PixelVec pj = pE;  // (base_x, base_y+1) already loaded as pE
+    PixelVec pk = load_fp(fp, fp_stride, base_x + 1, base_y + 1, fp_w, fp_h);
+    PixelVec pl = load_fp(fp, fp_stride, base_x + 2, base_y + 1, fp_w, fp_h);
+    PixelVec pn = load_fp(fp, fp_stride, base_x, base_y + 2, fp_w, fp_h);
+    PixelVec po = load_fp(fp, fp_stride, base_x + 1, base_y + 2, fp_w, fp_h);
+
+    PixelVec min4 = pv_min(pv_min(pv_min(pf, pg), pj), pk);
+    PixelVec max4 = pv_max(pv_max(pv_max(pf, pg), pj), pk);
+
+    PixelVec aC = pv_zero();
+    float aW = 0.0f;
+    fsr_easu_tap(&aC, &aW, 0.0f - pp_x, -1.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pb);
+    fsr_easu_tap(&aC, &aW, 1.0f - pp_x, -1.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pc);
+    fsr_easu_tap(&aC, &aW, -1.0f - pp_x, 1.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pi);
+    fsr_easu_tap(&aC, &aW, 0.0f - pp_x, 1.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pj);
+    fsr_easu_tap(&aC, &aW, 0.0f - pp_x, 0.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pf);
+    fsr_easu_tap(&aC, &aW, -1.0f - pp_x, 0.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pe);
+    fsr_easu_tap(&aC, &aW, 1.0f - pp_x, 1.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pk);
+    fsr_easu_tap(&aC, &aW, 2.0f - pp_x, 1.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pl);
+    fsr_easu_tap(&aC, &aW, 2.0f - pp_x, 0.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, ph);
+    fsr_easu_tap(&aC, &aW, 1.0f - pp_x, 0.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pg);
+    fsr_easu_tap(&aC, &aW, 1.0f - pp_x, 2.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, po);
+    fsr_easu_tap(&aC, &aW, 0.0f - pp_x, 2.0f - pp_y, dirX, dirY, len2_x, len2_y, lob, clp, pn);
+
+    if (!(aW >= 1e-6f)) {
+        *pix = pf;
+    } else {
+        float rcpW = ffxReciprocal(aW);
+        rcpW = ffxMin(rcpW, 1000.0f);
+        PixelVec vRcpW = pv_set1(rcpW);
+        PixelVec result = pv_mul(aC, vRcpW);
+        result = pv_max(min4, result);
+        result = pv_min(max4, result);
+        *pix = result;
+    }
+}
+
 static const VSFrame *VS_CC easu_get_frame(int n, int activationReason, void *instanceData,
                                            void **frameData, VSFrameContext *frameCtx,
                                            VSCore *core, const VSAPI *vsapi) {
@@ -190,21 +328,33 @@ static const VSFrame *VS_CC easu_get_frame(int n, int activationReason, void *in
 
         VSFrame *dst = vsapi->newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
 
+        // Pre-convert entire input to float planes (one-time cost)
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
+
+        float *fp[3];
+        int fp_stride;
+        float *fp_buf = convert_to_float_planes(fp, &fp_stride, &ctx);
 
         PixelStoreContext sctx;
         init_store_context(&sctx, dst, vsapi);
 
+        const float * const *fp_c = (const float * const *)fp;
+
         for (int y = 0; y < d->vi.height; y++) {
             for (int x = 0; x < d->vi.width; x++) {
                 PixelVec result;
-                fsr_easu_float(&result, x, y, &ctx,
-                              d->con0, d->con1, d->con2, d->con3);
+                if (d->fast)
+                    fsr_easu_float_fast(&result, x, y, fp_c, fp_stride,
+                                       ctx.width, ctx.height, d->con0);
+                else
+                    fsr_easu_float(&result, x, y, fp_c, fp_stride,
+                                  ctx.width, ctx.height, d->con0);
                 store_pixel_vec(&sctx, x, y, result);
             }
         }
 
+        free(fp_buf);
         vsapi->freeFrame(src);
         return dst;
     }
@@ -263,6 +413,10 @@ void easu_create(const VSMap *in, VSMap *out, void *userData,
 
     d.input_width = vi->width;
     d.input_height = vi->height;
+
+    int fast = (int)vsapi->mapGetInt(in, "fast", 0, &err);
+    if (err) fast = 0;
+    d.fast = fast;
 
     d.vi = *vi;
     d.vi.width = width;

@@ -8,11 +8,12 @@ FidelityFX for VapourSynth
 ### EASU - 放大
 
 ```python
-fidelityfx.EASU(clip, width=?, height=?)
+fidelityfx.EASU(clip, width=?, height=?, fast=0)
 ```
 
 - `width`: 输出宽度（必须不低于输入宽度）
 - `height`: 输出高度（必须不低于输入高度）
+- `fast`: 是否启用快速/低质量模式
 
 ### RCAS - 锐化
 
@@ -21,12 +22,12 @@ fidelityfx.RCAS(clip, sharpness=0.2)
 ```
 
 - `sharpness`: 锐化强度，范围 `[0.0, 2.0]`（默认 `0.2` ）
-  - `0.0` 最大锐化 ； `2.0` 最小锐化
+  - `0.0` 最大锐化
 
 ### ChromaticAberration - 色差
 
 ```python
-fidelityfx.ChromaticAberration(clip, intensity=1.0)
+fidelityfx.CA(clip, intensity=1.0)
 ```
 
 - `intensity`: 色差强度，范围 `[0.0, 20.0]`（默认 `1.0` ）
@@ -35,7 +36,7 @@ fidelityfx.ChromaticAberration(clip, intensity=1.0)
 ### Vignette - 暗角
 
 ```python
-fidelityfx.Vignette(clip, intensity=1.0)
+fidelityfx.VIG(clip, intensity=1.0)
 ```
 
 - `intensity`: 暗角强度，范围 `[0.0, 2.0]` （默认 `1.0` ）
@@ -44,7 +45,7 @@ fidelityfx.Vignette(clip, intensity=1.0)
 ### Grain - 胶片颗粒
 
 ```python
-fidelityfx.Grain(clip, scale=1.0, amount=0.05, seed=-1)
+fidelityfx.GRAIN(clip, scale=1.0, amount=0.05, seed=-1)
 ```
 
 - `scale`: 颗粒尺度，范围 `[0.01, 20.0]` （默认 `1.0` ）
@@ -68,17 +69,17 @@ clip = core.fidelityfx.EASU(clip, width=2560, height=1440)
 clip = core.fidelityfx.RCAS(clip, sharpness=0.1)
 
 # 镜头特效
-clip = core.fidelityfx.ChromaticAberration(clip, intensity=1.5)
-clip = core.fidelityfx.Vignette(clip, intensity=0.8)
-clip = core.fidelityfx.Grain(clip, amount=1.0)
+clip = core.fidelityfx.CA(clip, intensity=1.5)
+clip = core.fidelityfx.VIG(clip, intensity=0.8)
+clip = core.fidelityfx.GRAIN(clip, amount=0.5)
 
 clip.set_output()
 ```
 
 ## 支持的格式
 
-| 输入格式 | 位深 | EASU | RCAS | ChromaticAberration | Vignette | Grain |
-|------|------|------|------|---------------------|----------|-------|
+| 输入格式 | 位深 | EASU | RCAS | CA | VIG | GRAIN |
+|------|------|------|------|-----|------|-------|
 | RGB24 | 8-bit | ✅ | ✅ | ✅ | ✅ | ✅ |
 | RGB30 | 10-bit | ✅ | ✅ | ✅ | ✅ | ✅ |
 | RGB48 | 16-bit | ✅ | ✅ | ✅ | ✅ | ✅ |

@@ -19,6 +19,7 @@ typedef struct {
     VSVideoInfo vi;
     int input_width;
     int input_height;
+    int fast;
     FfxUInt32x4 con0, con1, con2, con3;
 } EasuData;
 

@@ -1,6 +1,6 @@
 project('vs-fidelityfx', 'cpp',
-  version: '1.0.1',
-  default_options: ['cpp_std=c++11', 'warning_level=2', 'buildtype=release']
+  version: '1.0.2',
+  default_options: ['cpp_std=c++20', 'warning_level=2', 'buildtype=release', 'b_lto=true']
 )
 
 # Dependencies
@@ -29,16 +29,33 @@ if host_machine.cpu_family() == 'x86'
   add_project_arguments('-msse2', language: 'cpp')
 endif
 
+# Enable SSE4.1 for faster float↔int conversions and blending
+if cpp.has_argument('-msse4.1')
+  add_project_arguments('-msse4.1', language: 'cpp')
+endif
+
+# Fast math (no NaN/Inf checks needed — pixel values are well-defined)
+if cpp.has_argument('-ffast-math')
+  add_project_arguments('-ffast-math', language: 'cpp')
+endif
+
 # Platform-specific flags
 if host_machine.system() == 'windows'
   add_project_arguments('-D_CRT_SECURE_NO_WARNINGS', language: 'cpp')
 endif
 
 # Build shared library
+if cpp.get_id() == 'gcc'
+  link_args = ['-static-libgcc', '-static-libstdc++', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic']
+else
+  link_args = []
+endif
+
 shared_library('vs_fidelityfx',
   sources,
   include_directories: inc_dirs,
   dependencies: [math_dep],
+  link_args: link_args,
   name_prefix: '',
   install: true,
   install_dir: get_option('libdir')

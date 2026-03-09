@@ -39,12 +39,18 @@ static const VSFrame *VS_CC vignette_get_frame(int n, int activationReason, void
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
+        float *fp[3];
+        int fp_stride;
+        float *fp_buf = convert_to_float_planes(fp, &fp_stride, &ctx);
+
         PixelStoreContext sctx;
         init_store_context(&sctx, dst, vsapi);
 
         float centerX = (float)(width / 2);
         float centerY = (float)(height / 2);
         float piOver4 = (float)(M_PI * 0.25);
+
+        int nPlanes = ctx.numPlanes >= 3 ? 3 : 1;
 
         for (int y = 0; y < height; y++) {
             // Precompute Y component of vignette mask for this row
@@ -63,15 +69,16 @@ static const VSFrame *VS_CC vignette_get_frame(int n, int activationReason, void
                 if (mask < 0.0f) mask = 0.0f;
                 if (mask > 1.0f) mask = 1.0f;
 
+                int idx = y * fp_stride + x;
                 float rgb[3];
-                load_pixel_rgb(rgb, &ctx, x, y);
-                rgb[0] *= mask;
-                rgb[1] *= mask;
-                rgb[2] *= mask;
+                rgb[0] = fp[0][idx] * mask;
+                rgb[1] = fp[1][idx] * mask;
+                rgb[2] = fp[2][idx] * mask;
                 store_pixel_rgb(&sctx, x, y, rgb);
             }
         }
 
+        free(fp_buf);
         vsapi->freeFrame(src);
         return dst;
     }

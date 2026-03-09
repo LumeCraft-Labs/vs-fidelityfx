@@ -65,36 +65,32 @@ static inline uint16_t float_to_half(float val) {
     return h;
 }
 
-// Pixel format tag — determined once at context init, avoids per-pixel format inspection
+// Pixel format enum — precomputed to avoid per-pixel branching
 typedef enum {
-    PF_U8,    // 8-bit unsigned integer
-    PF_U16,   // 10-16 bit unsigned integer (stored as uint16_t)
-    PF_F32,   // 32-bit float
-    PF_F16    // 16-bit half float (stored as uint16_t)
-} PixelFormatTag;
+    PF_INT8,
+    PF_INT16,
+    PF_FLOAT32,
+    PF_FLOAT16
+} PixelFormat;
 
 // Pixel loading context for callbacks
 typedef struct {
-    const VSFrame *frame;
-    const VSVideoFormat *format;
     const uint8_t *plane_ptrs[3];  // R, G, B plane pointers (GRAY: all point to plane 0)
-    ptrdiff_t strides[3];          // Byte strides
-    ptrdiff_t elem_strides[3];     // Element strides (stride / sizeof(element))
+    ptrdiff_t strides[3];          // Strides in elements (not bytes)
     int width;
     int height;
     int numPlanes;                 // 1 for GRAY, 3 for RGB
-    PixelFormatTag tag;            // Format tag for fast dispatch
-    float norm_scale;              // 1.0/maxVal for int, 1.0 for float
+    PixelFormat pixfmt;
+    float loadScale;               // 1.0f/maxVal for integer formats
 } PixelLoadContext;
 
-// Pixel store context — caches write pointers and format info
+// Pixel store context — caches write pointers to avoid per-pixel VS API calls
 typedef struct {
-    uint8_t *plane_ptrs[3];        // Write plane pointers
-    ptrdiff_t strides[3];          // Byte strides
-    ptrdiff_t elem_strides[3];     // Element strides
+    uint8_t *plane_ptrs[3];
+    ptrdiff_t strides[3];          // Strides in elements (not bytes)
     int writePlanes;               // 1 for GRAY, 3 for RGB
-    PixelFormatTag tag;
-    float denorm_scale;            // maxVal for int, 1.0 for float
+    PixelFormat pixfmt;
+    float storeScale;              // maxVal for integer formats
 } PixelStoreContext;
 
 // Initialize pixel loading context
@@ -230,5 +226,11 @@ float sample_channel_bilinear(const PixelLoadContext *ctx, int channel, float px
 
 // Read a single sample from one channel at integer coords (clamped)
 float read_channel(const PixelLoadContext *ctx, int channel, int x, int y);
+
+// ========== Bulk float plane conversion ==========
+// Pre-converts an entire input frame into contiguous float planes.
+// Eliminates per-pixel format branching and conversion in inner loops.
+float *convert_to_float_planes(float *planes[3], int *out_stride,
+                               const PixelLoadContext *ctx);
 
 #endif // PIXEL_ACCESS_H

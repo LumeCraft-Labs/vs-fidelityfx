@@ -51,6 +51,10 @@ static const VSFrame *VS_CC ca_get_frame(int n, int activationReason, void *inst
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
+        float *fp[3];
+        int fp_stride;
+        float *fp_buf = convert_to_float_planes(fp, &fp_stride, &ctx);
+
         PixelStoreContext sctx;
         init_store_context(&sctx, dst, vsapi);
 
@@ -70,16 +74,40 @@ static const VSFrame *VS_CC ca_get_frame(int n, int activationReason, void *inst
                 float greenShiftX = ((float)x - centerX) * greenMag + centerX;
                 float greenShiftY = ((float)y - centerY) * greenMag + centerY;
 
-                // Blue channel: sample at original position (no shift)
-                float red   = sample_channel_bilinear(&ctx, 0, redShiftX, redShiftY);
-                float green = sample_channel_bilinear(&ctx, 1, greenShiftX, greenShiftY);
-                float blue  = read_channel(&ctx, 2, x, y);
+                // Bilinear sample from pre-converted float planes
+                // Red channel
+                float rx = fminf(fmaxf(redShiftX, 0.0f), (float)(width - 1));
+                float ry = fminf(fmaxf(redShiftY, 0.0f), (float)(height - 1));
+                int rx0 = (int)rx, ry0 = (int)ry;
+                int rx1 = rx0 < width - 1 ? rx0 + 1 : rx0;
+                int ry1 = ry0 < height - 1 ? ry0 + 1 : ry0;
+                float rfx = rx - rx0, rfy = ry - ry0;
+                float red = fp[0][ry0 * fp_stride + rx0] * (1.0f - rfx) * (1.0f - rfy)
+                          + fp[0][ry0 * fp_stride + rx1] * rfx * (1.0f - rfy)
+                          + fp[0][ry1 * fp_stride + rx0] * (1.0f - rfx) * rfy
+                          + fp[0][ry1 * fp_stride + rx1] * rfx * rfy;
+
+                // Green channel
+                float gx = fminf(fmaxf(greenShiftX, 0.0f), (float)(width - 1));
+                float gy = fminf(fmaxf(greenShiftY, 0.0f), (float)(height - 1));
+                int gx0 = (int)gx, gy0 = (int)gy;
+                int gx1 = gx0 < width - 1 ? gx0 + 1 : gx0;
+                int gy1 = gy0 < height - 1 ? gy0 + 1 : gy0;
+                float gfx = gx - gx0, gfy = gy - gy0;
+                float green = fp[1][gy0 * fp_stride + gx0] * (1.0f - gfx) * (1.0f - gfy)
+                            + fp[1][gy0 * fp_stride + gx1] * gfx * (1.0f - gfy)
+                            + fp[1][gy1 * fp_stride + gx0] * (1.0f - gfx) * gfy
+                            + fp[1][gy1 * fp_stride + gx1] * gfx * gfy;
+
+                // Blue channel: at original position (no shift)
+                float blue = fp[2][y * fp_stride + x];
 
                 float rgb[3] = { red, green, blue };
                 store_pixel_rgb(&sctx, x, y, rgb);
             }
         }
 
+        free(fp_buf);
         vsapi->freeFrame(src);
         return dst;
     }

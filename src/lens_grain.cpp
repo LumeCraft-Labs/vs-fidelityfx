@@ -72,6 +72,10 @@ static const VSFrame *VS_CC grain_get_frame(int n, int activationReason, void *i
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
+        float *fp[3];
+        int fp_stride;
+        float *fp_buf = convert_to_float_planes(fp, &fp_stride, &ctx);
+
         PixelStoreContext sctx;
         init_store_context(&sctx, dst, vsapi);
 
@@ -102,9 +106,12 @@ static const VSFrame *VS_CC grain_get_frame(int n, int activationReason, void *i
                 float len = sqrtf(simplexP[0] * simplexP[0] + simplexP[1] * simplexP[1]);
                 float grain = 1.0f - 2.0f * exp2f(-len * 3.0f);
 
-                // Apply grain: matches GPU formula
+                // Apply grain: read from pre-converted float planes
+                int idx = y * fp_stride + x;
                 float rgb[3];
-                load_pixel_rgb(rgb, &ctx, x, y);
+                rgb[0] = fp[0][idx];
+                rgb[1] = fp[1][idx];
+                rgb[2] = fp[2][idx];
                 for (int c = 0; c < 3; c++) {
                     float limit = fminf(rgb[c], 1.0f - rgb[c]);
                     rgb[c] += grain * limit * grainAmount;
@@ -113,6 +120,7 @@ static const VSFrame *VS_CC grain_get_frame(int n, int activationReason, void *i
             }
         }
 
+        free(fp_buf);
         vsapi->freeFrame(src);
         return dst;
     }
