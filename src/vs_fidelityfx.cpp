@@ -6,7 +6,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI
     vspapi->configPlugin("com.hooke007.fidelityfx",
                          "fidelityfx",
                          "FidelityFX for VapourSynth",
-                         VS_MAKE_VERSION(1, 0),
+                         VS_MAKE_VERSION(1, 1),
                          VAPOURSYNTH_API_VERSION,
                          0,
                          plugin);

@@ -84,41 +84,7 @@ typedef struct {
     float loadScale;               // 1.0f/maxVal for integer formats
 } PixelLoadContext;
 
-// Pixel store context — caches write pointers to avoid per-pixel VS API calls
-typedef struct {
-    uint8_t *plane_ptrs[3];
-    ptrdiff_t strides[3];          // Strides in elements (not bytes)
-    int writePlanes;               // 1 for GRAY, 3 for RGB
-    PixelFormat pixfmt;
-    float storeScale;              // maxVal for integer formats
-} PixelStoreContext;
-
-// Initialize pixel loading context
-void init_pixel_context(PixelLoadContext *ctx, const VSFrame *frame,
-                       const VSAPI *vsapi);
-
-// Initialize pixel store context
-void init_store_context(PixelStoreContext *ctx, VSFrame *frame,
-                       const VSAPI *vsapi);
-
-// Clamp coordinate to valid range
-static inline int clamp_coord(int coord, int max) {
-    if (coord < 0) return 0;
-    if (coord >= max) return max - 1;
-    return coord;
-}
-
-// Load single pixel as float RGB [0.0, 1.0]
-void load_pixel_rgb(float rgb[3], const PixelLoadContext *ctx, int x, int y);
-
-// Store float RGB [0.0, 1.0] to pixel
-void store_pixel_rgb(const PixelStoreContext *ctx, int x, int y, const float rgb[3]);
-
-// Load 2x2 block of pixels for a single channel (gather4)
-void gather4_channel(float result[4], const PixelLoadContext *ctx,
-                    float x, float y, int channel);
-
-// ========== PixelVec: Cross-architecture SIMD abstraction ==========
+// =============== PixelVec: Cross-architecture SIMD abstraction ===============
 // Uses SSE on x86/x86_64 when available, scalar fallback otherwise
 
 #ifdef __SSE2__
@@ -214,6 +180,46 @@ static inline PixelVec pv_max3(PixelVec a, PixelVec b, PixelVec c) {
     return pv_max(pv_max(a, b), c);
 }
 
+// Pixel store context — caches write pointers to avoid per-pixel VS API calls
+struct PixelStoreContext;
+typedef void (*StoreVecFn)(const PixelStoreContext *ctx, int x, int y, PixelVec rgb);
+typedef void (*StoreRgbFn)(const PixelStoreContext *ctx, int x, int y, const float rgb[3]);
+
+struct PixelStoreContext {
+    uint8_t *plane_ptrs[3];
+    ptrdiff_t strides[3];          // Strides in elements (not bytes)
+    int writePlanes;               // 1 for GRAY, 3 for RGB
+    PixelFormat pixfmt;
+    float storeScale;              // maxVal for integer formats
+    StoreVecFn store_vec;          // Format-specialized store (PixelVec)
+    StoreRgbFn store_rgb;          // Format-specialized store (float[3])
+};
+
+// Initialize pixel loading context
+void init_pixel_context(PixelLoadContext *ctx, const VSFrame *frame,
+                       const VSAPI *vsapi);
+
+// Initialize pixel store context
+void init_store_context(PixelStoreContext *ctx, VSFrame *frame,
+                       const VSAPI *vsapi);
+
+// Clamp coordinate to valid range
+static inline int clamp_coord(int coord, int max) {
+    if (coord < 0) return 0;
+    if (coord >= max) return max - 1;
+    return coord;
+}
+
+// Load single pixel as float RGB [0.0, 1.0]
+void load_pixel_rgb(float rgb[3], const PixelLoadContext *ctx, int x, int y);
+
+// Store float RGB [0.0, 1.0] to pixel
+void store_pixel_rgb(const PixelStoreContext *ctx, int x, int y, const float rgb[3]);
+
+// Load 2x2 block of pixels for a single channel (gather4)
+void gather4_channel(float result[4], const PixelLoadContext *ctx,
+                    float x, float y, int channel);
+
 // Load single pixel as PixelVec {R, G, B, 0}
 PixelVec load_pixel_vec(const PixelLoadContext *ctx, int x, int y);
 
@@ -227,10 +233,15 @@ float sample_channel_bilinear(const PixelLoadContext *ctx, int channel, float px
 // Read a single sample from one channel at integer coords (clamped)
 float read_channel(const PixelLoadContext *ctx, int channel, int x, int y);
 
-// ========== Bulk float plane conversion ==========
+// ======================= Bulk float plane conversion =========================
 // Pre-converts an entire input frame into contiguous float planes.
 // Eliminates per-pixel format branching and conversion in inner loops.
 float *convert_to_float_planes(float *planes[3], int *out_stride,
                                const PixelLoadContext *ctx);
+
+// Interleaved RGBL conversion: each pixel stored as {R, G, B, Luma} (16 bytes).
+// Luma = 0.5*R + G + 0.5*B.  Stride is in pixels (each pixel = 4 floats).
+// Returns aligned buffer (free with free()). On failure returns NULL.
+float *convert_to_rgbl(int *out_stride, const PixelLoadContext *ctx);
 
 #endif // PIXEL_ACCESS_H

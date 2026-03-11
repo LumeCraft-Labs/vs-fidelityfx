@@ -48,6 +48,16 @@ void init_pixel_context(PixelLoadContext *ctx, const VSFrame *frame,
     }
 }
 
+// Forward declarations of format-specialized store functions
+static void store_rgb_int8(const PixelStoreContext *ctx, int x, int y, const float rgb[3]);
+static void store_rgb_int16(const PixelStoreContext *ctx, int x, int y, const float rgb[3]);
+static void store_rgb_f32(const PixelStoreContext *ctx, int x, int y, const float rgb[3]);
+static void store_rgb_f16(const PixelStoreContext *ctx, int x, int y, const float rgb[3]);
+static void store_vec_int8(const PixelStoreContext *ctx, int x, int y, PixelVec rgb);
+static void store_vec_int16(const PixelStoreContext *ctx, int x, int y, PixelVec rgb);
+static void store_vec_f32(const PixelStoreContext *ctx, int x, int y, PixelVec rgb);
+static void store_vec_f16(const PixelStoreContext *ctx, int x, int y, PixelVec rgb);
+
 void init_store_context(PixelStoreContext *ctx, VSFrame *frame,
                        const VSAPI *vsapi) {
     const VSVideoFormat *format = vsapi->getVideoFrameFormat(frame);
@@ -65,6 +75,12 @@ void init_store_context(PixelStoreContext *ctx, VSFrame *frame,
         ctx->plane_ptrs[c] = vsapi->getWritePtr(frame, c);
         ctx->strides[c] = vsapi->getStride(frame, c) / elem;
     }
+
+    // format-specialized function pointers
+    static const StoreVecFn vec_table[] = { store_vec_int8, store_vec_int16, store_vec_f32, store_vec_f16 };
+    static const StoreRgbFn rgb_table[] = { store_rgb_int8, store_rgb_int16, store_rgb_f32, store_rgb_f16 };
+    ctx->store_vec = vec_table[ctx->pixfmt];
+    ctx->store_rgb = rgb_table[ctx->pixfmt];
 }
 
 void load_pixel_rgb(float rgb[3], const PixelLoadContext *ctx, int x, int y) {
@@ -95,33 +111,33 @@ void load_pixel_rgb(float rgb[3], const PixelLoadContext *ctx, int x, int y) {
     }
 }
 
-void store_pixel_rgb(const PixelStoreContext *ctx, int x, int y, const float rgb[3]) {
-    switch (ctx->pixfmt) {
-        case PF_INT8: {
-            float maxVal = ctx->storeScale;
-            for (int c = 0; c < ctx->writePlanes; c++) {
-                float clamped = fminf(fmaxf(rgb[c], 0.0f), 1.0f);
-                ctx->plane_ptrs[c][y * ctx->strides[c] + x] = (uint8_t)(clamped * maxVal + 0.5f);
-            }
-            break;
-        }
-        case PF_INT16: {
-            float maxVal = ctx->storeScale;
-            for (int c = 0; c < ctx->writePlanes; c++) {
-                float clamped = fminf(fmaxf(rgb[c], 0.0f), 1.0f);
-                ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = (uint16_t)(clamped * maxVal + 0.5f);
-            }
-            break;
-        }
-        case PF_FLOAT32:
-            for (int c = 0; c < ctx->writePlanes; c++)
-                ((float *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = rgb[c];
-            break;
-        case PF_FLOAT16:
-            for (int c = 0; c < ctx->writePlanes; c++)
-                ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = float_to_half(rgb[c]);
-            break;
+// ================== Format-specialized store functions =======================
+
+static void store_rgb_int8(const PixelStoreContext *ctx, int x, int y, const float rgb[3]) {
+    float maxVal = ctx->storeScale;
+    for (int c = 0; c < ctx->writePlanes; c++) {
+        float clamped = fminf(fmaxf(rgb[c], 0.0f), 1.0f);
+        ctx->plane_ptrs[c][y * ctx->strides[c] + x] = (uint8_t)(clamped * maxVal + 0.5f);
     }
+}
+static void store_rgb_int16(const PixelStoreContext *ctx, int x, int y, const float rgb[3]) {
+    float maxVal = ctx->storeScale;
+    for (int c = 0; c < ctx->writePlanes; c++) {
+        float clamped = fminf(fmaxf(rgb[c], 0.0f), 1.0f);
+        ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = (uint16_t)(clamped * maxVal + 0.5f);
+    }
+}
+static void store_rgb_f32(const PixelStoreContext *ctx, int x, int y, const float rgb[3]) {
+    for (int c = 0; c < ctx->writePlanes; c++)
+        ((float *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = rgb[c];
+}
+static void store_rgb_f16(const PixelStoreContext *ctx, int x, int y, const float rgb[3]) {
+    for (int c = 0; c < ctx->writePlanes; c++)
+        ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = float_to_half(rgb[c]);
+}
+
+void store_pixel_rgb(const PixelStoreContext *ctx, int x, int y, const float rgb[3]) {
+    ctx->store_rgb(ctx, x, y, rgb);
 }
 
 void gather4_channel(float result[4], const PixelLoadContext *ctx,
@@ -211,38 +227,31 @@ PixelVec load_pixel_vec(const PixelLoadContext *ctx, int x, int y) {
     return pv_set(r, g, b);
 }
 
-void store_pixel_vec(const PixelStoreContext *ctx, int x, int y, PixelVec rgb) {
-    float tmp[3];
-    tmp[0] = pv_extract(rgb, 0);
-    tmp[1] = pv_extract(rgb, 1);
-    tmp[2] = pv_extract(rgb, 2);
-
-    switch (ctx->pixfmt) {
-        case PF_INT8: {
-            float maxVal = ctx->storeScale;
-            for (int c = 0; c < ctx->writePlanes; c++) {
-                float clamped = fminf(fmaxf(tmp[c], 0.0f), 1.0f);
-                ctx->plane_ptrs[c][y * ctx->strides[c] + x] = (uint8_t)(clamped * maxVal + 0.5f);
-            }
-            break;
-        }
-        case PF_INT16: {
-            float maxVal = ctx->storeScale;
-            for (int c = 0; c < ctx->writePlanes; c++) {
-                float clamped = fminf(fmaxf(tmp[c], 0.0f), 1.0f);
-                ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = (uint16_t)(clamped * maxVal + 0.5f);
-            }
-            break;
-        }
-        case PF_FLOAT32:
-            for (int c = 0; c < ctx->writePlanes; c++)
-                ((float *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = tmp[c];
-            break;
-        case PF_FLOAT16:
-            for (int c = 0; c < ctx->writePlanes; c++)
-                ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = float_to_half(tmp[c]);
-            break;
+static void store_vec_int8(const PixelStoreContext *ctx, int x, int y, PixelVec rgb) {
+    float maxVal = ctx->storeScale;
+    for (int c = 0; c < ctx->writePlanes; c++) {
+        float clamped = fminf(fmaxf(pv_extract(rgb, c), 0.0f), 1.0f);
+        ctx->plane_ptrs[c][y * ctx->strides[c] + x] = (uint8_t)(clamped * maxVal + 0.5f);
     }
+}
+static void store_vec_int16(const PixelStoreContext *ctx, int x, int y, PixelVec rgb) {
+    float maxVal = ctx->storeScale;
+    for (int c = 0; c < ctx->writePlanes; c++) {
+        float clamped = fminf(fmaxf(pv_extract(rgb, c), 0.0f), 1.0f);
+        ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = (uint16_t)(clamped * maxVal + 0.5f);
+    }
+}
+static void store_vec_f32(const PixelStoreContext *ctx, int x, int y, PixelVec rgb) {
+    for (int c = 0; c < ctx->writePlanes; c++)
+        ((float *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = pv_extract(rgb, c);
+}
+static void store_vec_f16(const PixelStoreContext *ctx, int x, int y, PixelVec rgb) {
+    for (int c = 0; c < ctx->writePlanes; c++)
+        ((uint16_t *)ctx->plane_ptrs[c])[y * ctx->strides[c] + x] = float_to_half(pv_extract(rgb, c));
+}
+
+void store_pixel_vec(const PixelStoreContext *ctx, int x, int y, PixelVec rgb) {
+    ctx->store_vec(ctx, x, y, rgb);
 }
 
 float read_channel(const PixelLoadContext *ctx, int channel, int x, int y) {
@@ -353,5 +362,82 @@ float *convert_to_float_planes(float *planes[3], int *out_stride,
         }
     }
 
+    return buf;
+}
+
+float *convert_to_rgbl(int *out_stride, const PixelLoadContext *ctx) {
+    int w = ctx->width;
+    int h = ctx->height;
+    // 4 floats per pixel (R, G, B, Luma), 16-byte aligned
+#ifdef _WIN32
+    float *buf = (float *)_aligned_malloc((size_t)w * h * 4 * sizeof(float), 16);
+#else
+    float *buf = (float *)aligned_alloc(16, (size_t)w * h * 4 * sizeof(float));
+#endif
+    if (!buf) return NULL;
+    *out_stride = w;
+
+    const uint8_t *sp0 = ctx->plane_ptrs[0];
+    const uint8_t *sp1 = ctx->plane_ptrs[1];
+    const uint8_t *sp2 = ctx->plane_ptrs[2];
+    ptrdiff_t st0 = ctx->strides[0], st1 = ctx->strides[1], st2 = ctx->strides[2];
+
+    for (int y = 0; y < h; y++) {
+        float *dst = buf + (size_t)y * w * 4;
+        switch (ctx->pixfmt) {
+            case PF_INT8: {
+                float s = ctx->loadScale;
+                const uint8_t *r = sp0 + y * st0;
+                const uint8_t *g = sp1 + y * st1;
+                const uint8_t *b = sp2 + y * st2;
+                for (int x = 0; x < w; x++) {
+                    float rf = r[x] * s, gf = g[x] * s, bf = b[x] * s;
+                    dst[0] = rf; dst[1] = gf; dst[2] = bf;
+                    dst[3] = rf * 0.5f + gf + bf * 0.5f;
+                    dst += 4;
+                }
+                break;
+            }
+            case PF_INT16: {
+                float s = ctx->loadScale;
+                const uint16_t *r = (const uint16_t *)sp0 + y * st0;
+                const uint16_t *g = (const uint16_t *)sp1 + y * st1;
+                const uint16_t *b = (const uint16_t *)sp2 + y * st2;
+                for (int x = 0; x < w; x++) {
+                    float rf = r[x] * s, gf = g[x] * s, bf = b[x] * s;
+                    dst[0] = rf; dst[1] = gf; dst[2] = bf;
+                    dst[3] = rf * 0.5f + gf + bf * 0.5f;
+                    dst += 4;
+                }
+                break;
+            }
+            case PF_FLOAT32: {
+                const float *r = (const float *)sp0 + y * st0;
+                const float *g = (const float *)sp1 + y * st1;
+                const float *b = (const float *)sp2 + y * st2;
+                for (int x = 0; x < w; x++) {
+                    float rf = r[x], gf = g[x], bf = b[x];
+                    dst[0] = rf; dst[1] = gf; dst[2] = bf;
+                    dst[3] = rf * 0.5f + gf + bf * 0.5f;
+                    dst += 4;
+                }
+                break;
+            }
+            case PF_FLOAT16: {
+                const uint16_t *r = (const uint16_t *)sp0 + y * st0;
+                const uint16_t *g = (const uint16_t *)sp1 + y * st1;
+                const uint16_t *b = (const uint16_t *)sp2 + y * st2;
+                for (int x = 0; x < w; x++) {
+                    float rf = half_to_float(r[x]);
+                    float gf = half_to_float(g[x]);
+                    float bf = half_to_float(b[x]);
+                    dst[0] = rf; dst[1] = gf; dst[2] = bf;
+                    dst[3] = rf * 0.5f + gf + bf * 0.5f;
+                    dst += 4;
+                }
+                break;
+            }
+        }
+    }
     return buf;
 }

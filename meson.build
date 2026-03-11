@@ -1,5 +1,5 @@
 project('vs-fidelityfx', 'cpp',
-  version: '1.0.2',
+  version: '1.1.0',
   default_options: ['cpp_std=c++20', 'warning_level=2', 'buildtype=release', 'b_lto=true']
 )
 

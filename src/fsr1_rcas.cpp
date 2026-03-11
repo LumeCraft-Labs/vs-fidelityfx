@@ -4,12 +4,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-static inline PixelVec load_fp(const float * const *p, int stride,
-                               int x, int y, int w, int h) {
+static inline PixelVec load_rgbl(const float *buf, int stride,
+                                 int x, int y, int w, int h) {
     x = clamp_coord(x, w);
     y = clamp_coord(y, h);
-    int idx = y * stride + x;
-    return pv_set(p[0][idx], p[1][idx], p[2][idx]);
+#ifdef __SSE2__
+    return _mm_load_ps(buf + ((size_t)y * stride + x) * 4);
+#else
+    const float *p = buf + ((size_t)y * stride + x) * 4;
+    return pv_set(p[0], p[1], p[2]);
+#endif
 }
 
 static void fsr_rcas_con(FfxUInt32x4 con, FfxFloat32 sharpness) {
@@ -22,21 +26,21 @@ static void fsr_rcas_con(FfxUInt32x4 con, FfxFloat32 sharpness) {
 
 static void fsr_rcas_f(PixelVec *result,
                        int x, int y,
-                       const float * const *fp, int fp_stride, int fp_w, int fp_h,
+                       const float *rgbl, int rgbl_stride, int fp_w, int fp_h,
                        const FfxUInt32x4 con) {
-    // Load 5-tap cross pattern directly from float planes
-    PixelVec pb = load_fp(fp, fp_stride, x, y - 1, fp_w, fp_h);
-    PixelVec pd = load_fp(fp, fp_stride, x - 1, y, fp_w, fp_h);
-    PixelVec pe = load_fp(fp, fp_stride, x, y, fp_w, fp_h);
-    PixelVec pf = load_fp(fp, fp_stride, x + 1, y, fp_w, fp_h);
-    PixelVec ph = load_fp(fp, fp_stride, x, y + 1, fp_w, fp_h);
+    // Load 5-tap cross pattern from interleaved RGBL buffer
+    PixelVec pb = load_rgbl(rgbl, rgbl_stride, x, y - 1, fp_w, fp_h);
+    PixelVec pd = load_rgbl(rgbl, rgbl_stride, x - 1, y, fp_w, fp_h);
+    PixelVec pe = load_rgbl(rgbl, rgbl_stride, x, y, fp_w, fp_h);
+    PixelVec pf = load_rgbl(rgbl, rgbl_stride, x + 1, y, fp_w, fp_h);
+    PixelVec ph = load_rgbl(rgbl, rgbl_stride, x, y + 1, fp_w, fp_h);
 
-    // Luma times 2 (scalar)
-    float bL = pv_luma(pb);
-    float dL = pv_luma(pd);
-    float eL = pv_luma(pe);
-    float fL = pv_luma(pf);
-    float hL = pv_luma(ph);
+    // Extract pre-computed luma from 4th component
+    float bL = pv_extract(pb, 3);
+    float dL = pv_extract(pd, 3);
+    float eL = pv_extract(pe, 3);
+    float fL = pv_extract(pf, 3);
+    float hL = pv_extract(ph, 3);
 
     // Noise detection (scalar)
     float nz = 0.25f * bL + 0.25f * dL + 0.25f * fL + 0.25f * hL - eL;
@@ -99,28 +103,29 @@ static const VSFrame *VS_CC rcas_get_frame(int n, int activationReason, void *in
 
         VSFrame *dst = vsapi->newVideoFrame(fi, width, height, src, core);
 
-        // Pre-convert entire input to float planes
+        // Pre-convert entire input to interleaved RGBL
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
-        float *fp[3];
-        int fp_stride;
-        float *fp_buf = convert_to_float_planes(fp, &fp_stride, &ctx);
+        int rgbl_stride;
+        float *rgbl_buf = convert_to_rgbl(&rgbl_stride, &ctx);
 
         PixelStoreContext sctx;
         init_store_context(&sctx, dst, vsapi);
 
-        const float * const *fp_c = (const float * const *)fp;
-
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 PixelVec result;
-                fsr_rcas_f(&result, x, y, fp_c, fp_stride, width, height, d->constants);
-                store_pixel_vec(&sctx, x, y, result);
+                fsr_rcas_f(&result, x, y, rgbl_buf, rgbl_stride, width, height, d->constants);
+                sctx.store_vec(&sctx, x, y, result);
             }
         }
 
-        free(fp_buf);
+#ifdef _WIN32
+        _aligned_free(rgbl_buf);
+#else
+        free(rgbl_buf);
+#endif
         vsapi->freeFrame(src);
         return dst;
     }

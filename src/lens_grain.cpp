@@ -116,7 +116,7 @@ static const VSFrame *VS_CC grain_get_frame(int n, int activationReason, void *i
                     float limit = fminf(rgb[c], 1.0f - rgb[c]);
                     rgb[c] += grain * limit * grainAmount;
                 }
-                store_pixel_rgb(&sctx, x, y, rgb);
+                sctx.store_rgb(&sctx, x, y, rgb);
             }
         }
 

@@ -103,7 +103,7 @@ static const VSFrame *VS_CC ca_get_frame(int n, int activationReason, void *inst
                 float blue = fp[2][y * fp_stride + x];
 
                 float rgb[3] = { red, green, blue };
-                store_pixel_rgb(&sctx, x, y, rgb);
+                sctx.store_rgb(&sctx, x, y, rgb);
             }
         }
 

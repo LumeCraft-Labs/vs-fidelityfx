@@ -4,25 +4,30 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ========== Float-plane pixel access (zero overhead inner-loop) ==========
+// ========== RGBL interleaved pixel access (1 load = RGB + Luma) ==============
 
-static inline PixelVec load_fp(const float * const *p, int stride,
-                               int x, int y, int w, int h) {
+// Load pixel as PixelVec from interleaved RGBL buffer (16-byte aligned)
+static inline PixelVec load_rgbl(const float *buf, int stride,
+                                 int x, int y, int w, int h) {
     x = clamp_coord(x, w);
     y = clamp_coord(y, h);
-    int idx = y * stride + x;
-    return pv_set(p[0][idx], p[1][idx], p[2][idx]);
+#ifdef __SSE2__
+    return _mm_load_ps(buf + ((size_t)y * stride + x) * 4);
+#else
+    const float *p = buf + ((size_t)y * stride + x) * 4;
+    return pv_set(p[0], p[1], p[2]);
+#endif
 }
 
-static inline float luma_fp(const float * const *p, int stride,
-                            int x, int y, int w, int h) {
+// Extract pre-computed luma from RGBL pixel (4th component)
+static inline float luma_rgbl(const float *buf, int stride,
+                              int x, int y, int w, int h) {
     x = clamp_coord(x, w);
     y = clamp_coord(y, h);
-    int idx = y * stride + x;
-    return p[0][idx] * 0.5f + p[1][idx] + p[2][idx] * 0.5f;
+    return buf[((size_t)y * stride + x) * 4 + 3];
 }
 
-// ==========================================================================
+// =============================================================================
 
 static inline void fsr_easu_tap(
     PixelVec *aC, float *aW,
@@ -93,7 +98,7 @@ static void fsr_easu_set_float(
 static void fsr_easu_float(
     PixelVec *pix,
     int out_x, int out_y,
-    const float * const *fp, int fp_stride, int fp_w, int fp_h,
+    const float *rgbl, int rgbl_stride, int fp_w, int fp_h,
     const FfxUInt32x4 con0)
 {
     // Get position of 'f'
@@ -107,27 +112,27 @@ static void fsr_easu_float(
     int base_x = (int)fp_x;
     int base_y = (int)fp_y;
 
-    // Load 12 pixels directly from pre-converted float planes
-    PixelVec pb = load_fp(fp, fp_stride, base_x + 0, base_y - 1, fp_w, fp_h);
-    PixelVec pc = load_fp(fp, fp_stride, base_x + 1, base_y - 1, fp_w, fp_h);
-    PixelVec pe = load_fp(fp, fp_stride, base_x - 1, base_y + 0, fp_w, fp_h);
-    PixelVec pf = load_fp(fp, fp_stride, base_x + 0, base_y + 0, fp_w, fp_h);
-    PixelVec pg = load_fp(fp, fp_stride, base_x + 1, base_y + 0, fp_w, fp_h);
-    PixelVec ph = load_fp(fp, fp_stride, base_x + 2, base_y + 0, fp_w, fp_h);
-    PixelVec pi = load_fp(fp, fp_stride, base_x - 1, base_y + 1, fp_w, fp_h);
-    PixelVec pj = load_fp(fp, fp_stride, base_x + 0, base_y + 1, fp_w, fp_h);
-    PixelVec pk = load_fp(fp, fp_stride, base_x + 1, base_y + 1, fp_w, fp_h);
-    PixelVec pl = load_fp(fp, fp_stride, base_x + 2, base_y + 1, fp_w, fp_h);
-    PixelVec pn = load_fp(fp, fp_stride, base_x + 0, base_y + 2, fp_w, fp_h);
-    PixelVec po = load_fp(fp, fp_stride, base_x + 1, base_y + 2, fp_w, fp_h);
+    // Load 12 pixels from interleaved RGBL buffer (1 SSE load each)
+    PixelVec pb = load_rgbl(rgbl, rgbl_stride, base_x + 0, base_y - 1, fp_w, fp_h);
+    PixelVec pc = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y - 1, fp_w, fp_h);
+    PixelVec pe = load_rgbl(rgbl, rgbl_stride, base_x - 1, base_y + 0, fp_w, fp_h);
+    PixelVec pf = load_rgbl(rgbl, rgbl_stride, base_x + 0, base_y + 0, fp_w, fp_h);
+    PixelVec pg = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y + 0, fp_w, fp_h);
+    PixelVec ph = load_rgbl(rgbl, rgbl_stride, base_x + 2, base_y + 0, fp_w, fp_h);
+    PixelVec pi = load_rgbl(rgbl, rgbl_stride, base_x - 1, base_y + 1, fp_w, fp_h);
+    PixelVec pj = load_rgbl(rgbl, rgbl_stride, base_x + 0, base_y + 1, fp_w, fp_h);
+    PixelVec pk = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y + 1, fp_w, fp_h);
+    PixelVec pl = load_rgbl(rgbl, rgbl_stride, base_x + 2, base_y + 1, fp_w, fp_h);
+    PixelVec pn = load_rgbl(rgbl, rgbl_stride, base_x + 0, base_y + 2, fp_w, fp_h);
+    PixelVec po = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y + 2, fp_w, fp_h);
 
-    // Compute luma for each pixel
-    float bL = pv_luma(pb), cL = pv_luma(pc);
-    float eL = pv_luma(pe), fL = pv_luma(pf);
-    float gL = pv_luma(pg), hL = pv_luma(ph);
-    float iL = pv_luma(pi), jL = pv_luma(pj);
-    float kL = pv_luma(pk), lL = pv_luma(pl);
-    float nL = pv_luma(pn), oL = pv_luma(po);
+    // Extract pre-computed luma from 4th component (zero computation)
+    float bL = pv_extract(pb, 3), cL = pv_extract(pc, 3);
+    float eL = pv_extract(pe, 3), fL = pv_extract(pf, 3);
+    float gL = pv_extract(pg, 3), hL = pv_extract(ph, 3);
+    float iL = pv_extract(pi, 3), jL = pv_extract(pj, 3);
+    float kL = pv_extract(pk, 3), lL = pv_extract(pl, 3);
+    float nL = pv_extract(pn, 3), oL = pv_extract(po, 3);
 
     // Accumulate direction and length (scalar — luma only)
     float dir_x = 0.0f, dir_y = 0.0f, len = 0.0f;
@@ -197,12 +202,12 @@ static void fsr_easu_float(
     }
 }
 
-// ========== Fast-mode EASU (reduced quality, higher speed) ================
+// ================== Fast-mode EASU (reduced quality) =========================
 
 static void fsr_easu_float_fast(
     PixelVec *pix,
     int out_x, int out_y,
-    const float * const *fp, int fp_stride, int fp_w, int fp_h,
+    const float *rgbl, int rgbl_stride, int fp_w, int fp_h,
     const FfxUInt32x4 con0)
 {
     float pp_x = out_x * ffxAsFloat(con0[0]) + ffxAsFloat(con0[2]);
@@ -216,14 +221,14 @@ static void fsr_easu_float_fast(
     int base_y = (int)fp_y;
 
     // 5-tap cross pattern: A(top), B(left), C(center), D(right), E(bottom)
-    PixelVec pA = load_fp(fp, fp_stride, base_x, base_y - 1, fp_w, fp_h);
-    PixelVec pB = load_fp(fp, fp_stride, base_x - 1, base_y, fp_w, fp_h);
-    PixelVec pC = load_fp(fp, fp_stride, base_x, base_y, fp_w, fp_h);
-    PixelVec pD = load_fp(fp, fp_stride, base_x + 1, base_y, fp_w, fp_h);
-    PixelVec pE = load_fp(fp, fp_stride, base_x, base_y + 1, fp_w, fp_h);
+    PixelVec pA = load_rgbl(rgbl, rgbl_stride, base_x, base_y - 1, fp_w, fp_h);
+    PixelVec pB = load_rgbl(rgbl, rgbl_stride, base_x - 1, base_y, fp_w, fp_h);
+    PixelVec pC = load_rgbl(rgbl, rgbl_stride, base_x, base_y, fp_w, fp_h);
+    PixelVec pD = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y, fp_w, fp_h);
+    PixelVec pE = load_rgbl(rgbl, rgbl_stride, base_x, base_y + 1, fp_w, fp_h);
 
-    float lA = pv_luma(pA), lB = pv_luma(pB), lC = pv_luma(pC);
-    float lD = pv_luma(pD), lE = pv_luma(pE);
+    float lA = pv_extract(pA, 3), lB = pv_extract(pB, 3), lC = pv_extract(pC, 3);
+    float lD = pv_extract(pD, 3), lE = pv_extract(pE, 3);
 
     // Direction from cross differences
     float dc = lD - lC, cb = lC - lB;
@@ -245,9 +250,9 @@ static void fsr_easu_float_fast(
     // Early exit: flat region → bilinear
     if (dir2 < (1.0f / 64.0f)) {
         // Load the remaining 3 pixels for bilinear (f,g,j,k pattern)
-        PixelVec pg = load_fp(fp, fp_stride, base_x + 1, base_y, fp_w, fp_h);
-        PixelVec pj = load_fp(fp, fp_stride, base_x, base_y + 1, fp_w, fp_h);
-        PixelVec pk = load_fp(fp, fp_stride, base_x + 1, base_y + 1, fp_w, fp_h);
+        PixelVec pg = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y, fp_w, fp_h);
+        PixelVec pj = load_rgbl(rgbl, rgbl_stride, base_x, base_y + 1, fp_w, fp_h);
+        PixelVec pk = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y + 1, fp_w, fp_h);
         PixelVec row0 = pv_add(pv_mul(pC, pv_set1(1.0f - pp_x)),
                                pv_mul(pg, pv_set1(pp_x)));
         PixelVec row1 = pv_add(pv_mul(pj, pv_set1(1.0f - pp_x)),
@@ -273,17 +278,17 @@ static void fsr_easu_float_fast(
 
     // Now load remaining pixels for 12-tap
     PixelVec pb = pA;  // (base_x, base_y-1) already loaded as pA
-    PixelVec pc = load_fp(fp, fp_stride, base_x + 1, base_y - 1, fp_w, fp_h);
+    PixelVec pc = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y - 1, fp_w, fp_h);
     PixelVec pe = pB;  // (base_x-1, base_y) already loaded as pB
     PixelVec pf = pC;  // center
     PixelVec pg = pD;  // (base_x+1, base_y) already loaded as pD
-    PixelVec ph = load_fp(fp, fp_stride, base_x + 2, base_y, fp_w, fp_h);
-    PixelVec pi = load_fp(fp, fp_stride, base_x - 1, base_y + 1, fp_w, fp_h);
+    PixelVec ph = load_rgbl(rgbl, rgbl_stride, base_x + 2, base_y, fp_w, fp_h);
+    PixelVec pi = load_rgbl(rgbl, rgbl_stride, base_x - 1, base_y + 1, fp_w, fp_h);
     PixelVec pj = pE;  // (base_x, base_y+1) already loaded as pE
-    PixelVec pk = load_fp(fp, fp_stride, base_x + 1, base_y + 1, fp_w, fp_h);
-    PixelVec pl = load_fp(fp, fp_stride, base_x + 2, base_y + 1, fp_w, fp_h);
-    PixelVec pn = load_fp(fp, fp_stride, base_x, base_y + 2, fp_w, fp_h);
-    PixelVec po = load_fp(fp, fp_stride, base_x + 1, base_y + 2, fp_w, fp_h);
+    PixelVec pk = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y + 1, fp_w, fp_h);
+    PixelVec pl = load_rgbl(rgbl, rgbl_stride, base_x + 2, base_y + 1, fp_w, fp_h);
+    PixelVec pn = load_rgbl(rgbl, rgbl_stride, base_x, base_y + 2, fp_w, fp_h);
+    PixelVec po = load_rgbl(rgbl, rgbl_stride, base_x + 1, base_y + 2, fp_w, fp_h);
 
     PixelVec min4 = pv_min(pv_min(pv_min(pf, pg), pj), pk);
     PixelVec max4 = pv_max(pv_max(pv_max(pf, pg), pj), pk);
@@ -328,33 +333,34 @@ static const VSFrame *VS_CC easu_get_frame(int n, int activationReason, void *in
 
         VSFrame *dst = vsapi->newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
 
-        // Pre-convert entire input to float planes (one-time cost)
+        // Pre-convert entire input to interleaved RGBL (R,G,B,Luma per pixel)
         PixelLoadContext ctx;
         init_pixel_context(&ctx, src, vsapi);
 
-        float *fp[3];
-        int fp_stride;
-        float *fp_buf = convert_to_float_planes(fp, &fp_stride, &ctx);
+        int rgbl_stride;
+        float *rgbl_buf = convert_to_rgbl(&rgbl_stride, &ctx);
 
         PixelStoreContext sctx;
         init_store_context(&sctx, dst, vsapi);
-
-        const float * const *fp_c = (const float * const *)fp;
 
         for (int y = 0; y < d->vi.height; y++) {
             for (int x = 0; x < d->vi.width; x++) {
                 PixelVec result;
                 if (d->fast)
-                    fsr_easu_float_fast(&result, x, y, fp_c, fp_stride,
+                    fsr_easu_float_fast(&result, x, y, rgbl_buf, rgbl_stride,
                                        ctx.width, ctx.height, d->con0);
                 else
-                    fsr_easu_float(&result, x, y, fp_c, fp_stride,
+                    fsr_easu_float(&result, x, y, rgbl_buf, rgbl_stride,
                                   ctx.width, ctx.height, d->con0);
-                store_pixel_vec(&sctx, x, y, result);
+                sctx.store_vec(&sctx, x, y, result);
             }
         }
 
-        free(fp_buf);
+#ifdef _WIN32
+        _aligned_free(rgbl_buf);
+#else
+        free(rgbl_buf);
+#endif
         vsapi->freeFrame(src);
         return dst;
     }

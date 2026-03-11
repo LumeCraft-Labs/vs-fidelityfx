@@ -74,7 +74,7 @@ static const VSFrame *VS_CC vignette_get_frame(int n, int activationReason, void
                 rgb[0] = fp[0][idx] * mask;
                 rgb[1] = fp[1][idx] * mask;
                 rgb[2] = fp[2][idx] * mask;
-                store_pixel_rgb(&sctx, x, y, rgb);
+                sctx.store_rgb(&sctx, x, y, rgb);
             }
         }
 

@@ -21,8 +21,7 @@ fidelityfx.EASU(clip, width=?, height=?, fast=0)
 fidelityfx.RCAS(clip, sharpness=0.2)
 ```
 
-- `sharpness`: 锐化强度，范围 `[0.0, 2.0]`（默认 `0.2` ）
-  - `0.0` 最大锐化
+- `sharpness`: 锐化强度，范围 `[0.0, 2.0]`（默认 `0.2` ，注意 `0.0` 表示最大锐化）
 
 ### ChromaticAberration - 色差
 
@@ -31,7 +30,6 @@ fidelityfx.CA(clip, intensity=1.0)
 ```
 
 - `intensity`: 色差强度，范围 `[0.0, 20.0]`（默认 `1.0` ）
-  - `0.0` 无色差
 
 ### Vignette - 暗角
 
@@ -40,7 +38,6 @@ fidelityfx.VIG(clip, intensity=1.0)
 ```
 
 - `intensity`: 暗角强度，范围 `[0.0, 2.0]` （默认 `1.0` ）
-  - `0.0` 无暗角
 
 ### Grain - 胶片颗粒
 
@@ -50,7 +47,6 @@ fidelityfx.GRAIN(clip, scale=1.0, amount=0.05, seed=-1)
 
 - `scale`: 颗粒尺度，范围 `[0.01, 20.0]` （默认 `1.0` ）
 - `amount`: 颗粒强度，范围 `[0.0, 20.0]` （默认 `0.05` ）
-  - `0.0` 无颗粒
 - `seed`: 随机种子，整数类型（默认 `-1` ）
   - `-1` 使用帧序号作为种子（每帧颗粒不同，模拟真实胶片）
   - 大于或等于0使用固定种子（所有帧颗粒相同）
@@ -62,10 +58,10 @@ import vapoursynth as vs
 from vapoursynth import core
 
 clip = video_in # 1080p
-clip = core.resize.Bicubic(clip, format=vs.RGBH, matrix_in_s="709")
+clip = core.resize.Bicubic(clip, format=vs.RGBS, matrix_in_s="709")
 
 # FSR1
-clip = core.fidelityfx.EASU(clip, width=2560, height=1440)
+clip = core.fidelityfx.EASU(clip, width=2560, height=1440) # 对于EASU也建议使用线性空间输入
 clip = core.fidelityfx.RCAS(clip, sharpness=0.1)
 
 # 镜头特效
@@ -108,9 +104,9 @@ meson compile -C build
 
 ## 许可证
 
-本插件使用采用 MIT 许可证。
+MIT
 
 ## 其它
 
-- [AMD FidelityFX SDK](https://gpuopen.com/fidelityfx/)
+- [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK)
 - [VapourSynth](http://www.vapoursynth.com/)
